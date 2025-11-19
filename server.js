@@ -8,6 +8,12 @@ const PORT = process.env.PORT || 8080;
 
 // Create HTTP server
 const server = http.createServer((req, res) => {
+    // Simple health endpoint for reachability checks
+    if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('OK');
+        return;
+    }
     // Serve static files
     let filePath = '.' + req.url;
     if (filePath === './') {
