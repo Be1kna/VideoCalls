@@ -280,6 +280,32 @@ class VideoCallClient {
             return;
         }
         
+        // Before creating a WebSocket, do a quick HTTP reachability check to avoid
+        // creating sockets when the server is unreachable (prevents noisy onerror/1006 loops).
+        const httpProtocol = protocol === 'wss:' || protocol === 'https:' ? 'https:' : 'http:';
+        const httpUrl = `${httpProtocol}//${hostname}${port ? `:${port}` : ''}/`;
+
+        const serverReachable = await this._checkServerReachable(httpUrl, 3000).catch(err => {
+            this.debug('Server reachability check failed', 'warning', { error: err.message || err });
+            return false;
+        });
+
+        if (!serverReachable) {
+            this.debug('Server not reachable via HTTP — skipping WebSocket creation', 'error', { url: httpUrl });
+            // Schedule reconnect using existing backoff logic
+            if (!this.manualClose && this.reconnectAttempts < this.maxReconnectAttempts) {
+                const delay = this.reconnectDelayBase * Math.pow(2, this.reconnectAttempts);
+                this.reconnectAttempts += 1;
+                this.debug(`Server down, will retry WebSocket connect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`, 'info');
+                setTimeout(() => this.connectToServer(), delay);
+            } else if (!this.manualClose) {
+                this.debug('Max reachability retries reached; not attempting further automatic reconnects', 'error');
+                this.showNotification('Signaling server appears down. Please try again later.', 'error');
+                this.updateConnectionStatus('Disconnected', 'disconnected');
+            }
+            return;
+        }
+
         try {
             this.debug('Creating WebSocket instance...', 'info');
             this.socket = new WebSocket(wsUrl);
@@ -440,6 +466,24 @@ class VideoCallClient {
                 
             default:
                 this.debug(`Unknown message type: ${message.type}`, 'warning', message);
+        }
+    }
+
+    // Helper: check server is reachable via HTTP(S) before creating a WebSocket.
+    async _checkServerReachable(url, timeout = 3000) {
+        try {
+            const controller = new AbortController();
+            const id = setTimeout(() => controller.abort(), timeout);
+
+            // Use HEAD to keep response small where supported
+            const resp = await fetch(url, { method: 'HEAD', signal: controller.signal });
+            clearTimeout(id);
+
+            // Consider any 2xx/3xx/4xx response as reachable (we only care that the host responds)
+            return resp && (resp.status >= 100 && resp.status < 600);
+        } catch (err) {
+            // fetch may throw on network error or abort
+            return false;
         }
     }
     
