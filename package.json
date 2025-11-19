@@ -1,0 +1,26 @@
+{
+  "name": "video-call-app",
+  "version": "1.0.0",
+  "description": "WebRTC-based video calling application with camera, audio, and screen sharing support",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "webrtc",
+    "video-call",
+    "video-chat",
+    "screen-sharing",
+    "websocket"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.14.2"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+}
+
