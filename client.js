@@ -9,15 +9,6 @@ class VideoCallClient {
         this.userName = null;
         this.isScreenSharing = false;
         this.screenStream = null;
-        // Reconnect/backoff state to avoid tight reconnect loops
-        this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 6;
-        this.reconnectDelayBase = 1000; // base ms for exponential backoff
-        this.manualClose = false; // set true when user intentionally closes socket
-        // Debug suppression to avoid spamming identical messages
-        this._lastDebugKey = null;
-        this._lastDebugTime = 0;
-        this._debugSuppressWindow = 2000; // ms to suppress duplicate debug entries
         
         // Check if we're on a secure context (required for getUserMedia)
         if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
@@ -62,22 +53,6 @@ class VideoCallClient {
     }
     
     debug(message, type = 'info', data = null) {
-        try {
-            // Suppress identical debug entries within a short window to avoid spamming
-            const key = message + '|' + (data ? JSON.stringify(data) : '');
-            const now = Date.now();
-            if (this._lastDebugKey === key && (now - this._lastDebugTime) < this._debugSuppressWindow) {
-                // Still log to console but avoid adding to the debug box repeatedly
-                const consoleMethod = type === 'error' ? 'error' : type === 'warning' ? 'warn' : 'log';
-                console[consoleMethod](`[${type.toUpperCase()}] ${message} (suppressed duplicate)`, data || '');
-                return;
-            }
-            this._lastDebugKey = key;
-            this._lastDebugTime = now;
-        } catch (e) {
-            // If suppression fails for any reason, continue with normal logging
-            console.warn('Debug suppression error', e);
-        }
         const debugContent = document.getElementById('debugContent');
         if (!debugContent) return;
         
@@ -239,14 +214,6 @@ class VideoCallClient {
     }
     
     connectToServer() {
-        // Prevent creating multiple simultaneous sockets
-        if (this.socket && (this.socket.readyState === WebSocket.CONNECTING || this.socket.readyState === WebSocket.OPEN)) {
-            this.debug('WebSocket already connecting/open — skipping new connection', 'info');
-            return;
-        }
-
-        // Mark connection as not manually closed (so onclose may attempt reconnect)
-        this.manualClose = false;
         // Handle file:// protocol (when opening HTML directly)
         let wsUrl;
         if (window.location.protocol === 'file:') {
@@ -280,32 +247,6 @@ class VideoCallClient {
             return;
         }
         
-        // Before creating a WebSocket, do a quick HTTP reachability check to avoid
-        // creating sockets when the server is unreachable (prevents noisy onerror/1006 loops).
-        const httpProtocol = protocol === 'wss:' || protocol === 'https:' ? 'https:' : 'http:';
-        const httpUrl = `${httpProtocol}//${hostname}${port ? `:${port}` : ''}/`;
-
-        const serverReachable = await this._checkServerReachable(httpUrl, 3000).catch(err => {
-            this.debug('Server reachability check failed', 'warning', { error: err.message || err });
-            return false;
-        });
-
-        if (!serverReachable) {
-            this.debug('Server not reachable via HTTP — skipping WebSocket creation', 'error', { url: httpUrl });
-            // Schedule reconnect using existing backoff logic
-            if (!this.manualClose && this.reconnectAttempts < this.maxReconnectAttempts) {
-                const delay = this.reconnectDelayBase * Math.pow(2, this.reconnectAttempts);
-                this.reconnectAttempts += 1;
-                this.debug(`Server down, will retry WebSocket connect in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`, 'info');
-                setTimeout(() => this.connectToServer(), delay);
-            } else if (!this.manualClose) {
-                this.debug('Max reachability retries reached; not attempting further automatic reconnects', 'error');
-                this.showNotification('Signaling server appears down. Please try again later.', 'error');
-                this.updateConnectionStatus('Disconnected', 'disconnected');
-            }
-            return;
-        }
-
         try {
             this.debug('Creating WebSocket instance...', 'info');
             this.socket = new WebSocket(wsUrl);
@@ -315,8 +256,6 @@ class VideoCallClient {
             this.socket.onopen = () => {
                 this.debug('WebSocket connection opened successfully', 'success');
                 console.log('Connected to signaling server');
-                // Reset reconnect attempts on successful open
-                this.reconnectAttempts = 0;
                 
                 const joinMessage = {
                     type: 'join',
@@ -367,33 +306,18 @@ class VideoCallClient {
                     readyState: this.socket ? this.socket.readyState : 'unknown'
                 });
                 console.log('Disconnected from signaling server');
-
-                // If the socket was manually closed (leave call), do not attempt reconnect
-                if (this.manualClose) {
-                    this.updateConnectionStatus('Disconnected', 'disconnected');
-                    return;
-                }
-
-                const isAbnormal = event.code === 1006 || event.wasClean === false;
-                if (isAbnormal) {
+                
+                // Code 1006 is abnormal closure (connection lost)
+                if (event.code === 1006) {
                     this.debug('Abnormal WebSocket closure detected - connection may have been lost', 'error');
-
-                    if (this.reconnectAttempts < this.maxReconnectAttempts) {
-                        const delay = this.reconnectDelayBase * Math.pow(2, this.reconnectAttempts);
-                        this.reconnectAttempts += 1;
-                        this.debug(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`, 'info');
-                        this.showNotification('Connection lost. Attempting to reconnect...', 'warning');
-                        setTimeout(() => {
-                            if (this.roomId && this.userName) {
-                                this.debug('Attempting to reconnect WebSocket...', 'info');
-                                this.connectToServer();
-                            }
-                        }, delay);
-                    } else {
-                        this.debug('Max reconnect attempts reached', 'error');
-                        this.showNotification('Unable to reconnect. Please check your network/server and refresh.', 'error');
-                        this.updateConnectionStatus('Disconnected', 'disconnected');
-                    }
+                    this.showNotification('Connection lost. Attempting to reconnect...', 'warning');
+                    // Attempt to reconnect after a delay
+                    setTimeout(() => {
+                        if (this.roomId && this.userName) {
+                            this.debug('Attempting to reconnect WebSocket...', 'info');
+                            this.connectToServer();
+                        }
+                    }, 2000);
                 } else {
                     this.updateConnectionStatus('Disconnected', 'disconnected');
                 }
@@ -466,24 +390,6 @@ class VideoCallClient {
                 
             default:
                 this.debug(`Unknown message type: ${message.type}`, 'warning', message);
-        }
-    }
-
-    // Helper: check server is reachable via HTTP(S) before creating a WebSocket.
-    async _checkServerReachable(url, timeout = 3000) {
-        try {
-            const controller = new AbortController();
-            const id = setTimeout(() => controller.abort(), timeout);
-
-            // Use HEAD to keep response small where supported
-            const resp = await fetch(url, { method: 'HEAD', signal: controller.signal });
-            clearTimeout(id);
-
-            // Consider any 2xx/3xx/4xx response as reachable (we only care that the host responds)
-            return resp && (resp.status >= 100 && resp.status < 600);
-        } catch (err) {
-            // fetch may throw on network error or abort
-            return false;
         }
     }
     
@@ -1318,8 +1224,6 @@ class VideoCallClient {
     }
     
     leaveCall() {
-        // Mark manual close to prevent reconnect attempts
-        this.manualClose = true;
         // Stop all media tracks
         if (this.localStream) {
             this.localStream.getTracks().forEach(track => track.stop());

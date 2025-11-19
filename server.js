@@ -59,6 +59,17 @@ const rooms = new Map();
 
 wss.on('connection', (ws, req) => {
     console.log('New WebSocket connection');
+    try {
+        console.log('  Request headers:', {
+            origin: req.headers.origin,
+            'sec-websocket-key': req.headers['sec-websocket-key'],
+            'sec-websocket-protocol': req.headers['sec-websocket-protocol'],
+            'user-agent': req.headers['user-agent']
+        });
+        console.log('  Remote address:', req.socket && req.socket.remoteAddress);
+    } catch (e) {
+        console.warn('Failed to log connection request headers', e);
+    }
     
     let currentRoom = null;
     let userName = null;
@@ -110,6 +121,27 @@ wss.on('connection', (ws, req) => {
     ws.on('error', (error) => {
         console.error('WebSocket error:', error);
     });
+});
+
+// Log upgrade requests to help debug WSS handshake problems
+server.on('upgrade', (req, socket, head) => {
+    try {
+        console.log('HTTP upgrade request for WebSocket');
+        console.log('  Upgrade headers:', {
+            host: req.headers.host,
+            origin: req.headers.origin,
+            upgrade: req.headers.upgrade,
+            'sec-websocket-key': req.headers['sec-websocket-key'],
+            'sec-websocket-protocol': req.headers['sec-websocket-protocol']
+        });
+    } catch (e) {
+        console.warn('Failed to log upgrade request', e);
+    }
+});
+
+// Listen for errors on the WebSocket server itself
+wss.on('error', (err) => {
+    console.error('WebSocket.Server error:', err);
 });
 
 function handleJoin(ws, data, callback) {
