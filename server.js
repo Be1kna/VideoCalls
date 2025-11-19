@@ -76,15 +76,15 @@ wss.on('connection', (ws, req) => {
                     break;
                     
                 case 'offer':
-                    handleOffer(data);
+                    handleOffer(data, ws);
                     break;
-                    
+
                 case 'answer':
-                    handleAnswer(data);
+                    handleAnswer(data, ws);
                     break;
-                    
+
                 case 'ice-candidate':
-                    handleIceCandidate(data);
+                    handleIceCandidate(data, ws);
                     break;
                     
                 case 'leave':
@@ -157,54 +157,60 @@ function handleJoin(ws, data, callback) {
     console.log(`User ${name || 'Anonymous'} joined room ${room} (${roomParticipants.size} participants)`);
 }
 
-function handleOffer(data) {
+function handleOffer(data, senderWs) {
     const { room, offer } = data;
     const roomParticipants = rooms.get(room);
-    
+
     if (!roomParticipants) {
         return;
     }
-    
-    // Forward offer to other participants
-    roomParticipants.forEach((participant, ws) => {
-        ws.send(JSON.stringify({
-            type: 'offer',
-            offer: offer
-        }));
+
+    // Forward offer to other participants (exclude sender)
+    roomParticipants.forEach((participant, participantWs) => {
+        if (participantWs !== senderWs && participantWs.readyState === WebSocket.OPEN) {
+            participantWs.send(JSON.stringify({
+                type: 'offer',
+                offer: offer
+            }));
+        }
     });
 }
 
-function handleAnswer(data) {
+function handleAnswer(data, senderWs) {
     const { room, answer } = data;
     const roomParticipants = rooms.get(room);
-    
+
     if (!roomParticipants) {
         return;
     }
-    
-    // Forward answer to other participants
-    roomParticipants.forEach((participant, ws) => {
-        ws.send(JSON.stringify({
-            type: 'answer',
-            answer: answer
-        }));
+
+    // Forward answer to other participants (exclude sender)
+    roomParticipants.forEach((participant, participantWs) => {
+        if (participantWs !== senderWs && participantWs.readyState === WebSocket.OPEN) {
+            participantWs.send(JSON.stringify({
+                type: 'answer',
+                answer: answer
+            }));
+        }
     });
 }
 
-function handleIceCandidate(data) {
+function handleIceCandidate(data, senderWs) {
     const { room, candidate } = data;
     const roomParticipants = rooms.get(room);
-    
+
     if (!roomParticipants) {
         return;
     }
-    
-    // Forward ICE candidate to other participants
-    roomParticipants.forEach((participant, ws) => {
-        ws.send(JSON.stringify({
-            type: 'ice-candidate',
-            candidate: candidate
-        }));
+
+    // Forward ICE candidate to other participants (exclude sender)
+    roomParticipants.forEach((participant, participantWs) => {
+        if (participantWs !== senderWs && participantWs.readyState === WebSocket.OPEN) {
+            participantWs.send(JSON.stringify({
+                type: 'ice-candidate',
+                candidate: candidate
+            }));
+        }
     });
 }
 
