@@ -306,7 +306,21 @@ class VideoCallClient {
                     readyState: this.socket ? this.socket.readyState : 'unknown'
                 });
                 console.log('Disconnected from signaling server');
-                this.updateConnectionStatus('Disconnected', 'disconnected');
+                
+                // Code 1006 is abnormal closure (connection lost)
+                if (event.code === 1006) {
+                    this.debug('Abnormal WebSocket closure detected - connection may have been lost', 'error');
+                    this.showNotification('Connection lost. Attempting to reconnect...', 'warning');
+                    // Attempt to reconnect after a delay
+                    setTimeout(() => {
+                        if (this.roomId && this.userName) {
+                            this.debug('Attempting to reconnect WebSocket...', 'info');
+                            this.connectToServer();
+                        }
+                    }, 2000);
+                } else {
+                    this.updateConnectionStatus('Disconnected', 'disconnected');
+                }
             };
             
             // Check connection state after a short delay
@@ -581,13 +595,30 @@ class VideoCallClient {
         this.peerConnection.ontrack = (event) => {
             this.debug('Remote track received', 'success', {
                 streams: event.streams.length,
-                track: event.track ? { kind: event.track.kind, id: event.track.id } : null
+                track: event.track ? { 
+                    kind: event.track.kind, 
+                    id: event.track.id,
+                    enabled: event.track.enabled,
+                    readyState: event.track.readyState
+                } : null
             });
-            const remoteVideo = document.getElementById('remoteVideo');
-            remoteVideo.srcObject = event.streams[0];
-            this.remoteStream = event.streams[0];
-            document.getElementById('remoteLabel').textContent = 'Remote Participant';
-            this.updateConnectionStatus('Connected', 'connected');
+            
+            if (event.streams && event.streams.length > 0) {
+                const remoteVideo = document.getElementById('remoteVideo');
+                remoteVideo.srcObject = event.streams[0];
+                this.remoteStream = event.streams[0];
+                document.getElementById('remoteLabel').textContent = 'Remote Participant';
+                this.updateConnectionStatus('Connected', 'connected');
+                
+                // Force play the video
+                remoteVideo.play().then(() => {
+                    this.debug('Remote video playing', 'success');
+                }).catch(err => {
+                    this.debug('Error playing remote video', 'error', err);
+                });
+            } else {
+                this.debug('No streams in track event', 'warning');
+            }
         };
         
         // Handle ICE candidates
@@ -596,11 +627,24 @@ class VideoCallClient {
                 this.debug('ICE candidate generated', 'info', {
                     candidate: event.candidate.candidate.substring(0, 50) + '...'
                 });
-                this.socket.send(JSON.stringify({
-                    type: 'ice-candidate',
-                    room: this.roomId,
-                    candidate: event.candidate
-                }));
+                
+                // Check if socket is open before sending
+                if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                    try {
+                        this.socket.send(JSON.stringify({
+                            type: 'ice-candidate',
+                            room: this.roomId,
+                            candidate: event.candidate
+                        }));
+                        this.debug('ICE candidate sent successfully', 'info');
+                    } catch (error) {
+                        this.debug('Error sending ICE candidate', 'error', error);
+                    }
+                } else {
+                    this.debug('WebSocket not open, cannot send ICE candidate', 'warning', {
+                        readyState: this.socket ? this.socket.readyState : 'no socket'
+                    });
+                }
             } else {
                 this.debug('ICE candidate gathering complete', 'info');
             }
@@ -647,6 +691,26 @@ class VideoCallClient {
         this.peerConnection.oniceconnectionstatechange = () => {
             const state = this.peerConnection.iceConnectionState;
             this.debug(`ICE connection state: ${state}`, 'info');
+            
+            if (state === 'failed') {
+                this.debug('ICE connection failed - attempting to restart ICE', 'error');
+                // Try to restart ICE
+                this.peerConnection.restartIce().then(() => {
+                    this.debug('ICE restart initiated', 'info');
+                }).catch(err => {
+                    this.debug('Error restarting ICE', 'error', err);
+                });
+            } else if (state === 'connected') {
+                this.debug('ICE connection established successfully', 'success');
+            } else if (state === 'disconnected') {
+                this.debug('ICE connection disconnected', 'warning');
+            }
+        };
+        
+        // Handle ICE gathering state
+        this.peerConnection.onicegatheringstatechange = () => {
+            const state = this.peerConnection.iceGatheringState;
+            this.debug(`ICE gathering state: ${state}`, 'info');
         };
     }
     
@@ -663,12 +727,20 @@ class VideoCallClient {
             await this.peerConnection.setLocalDescription(offer);
             this.debug('Local description set', 'success');
             
-            this.socket.send(JSON.stringify({
-                type: 'offer',
-                room: this.roomId,
-                offer: offer
-            }));
-            this.debug('Offer sent to signaling server', 'success');
+            // Check if socket is open before sending
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.socket.send(JSON.stringify({
+                    type: 'offer',
+                    room: this.roomId,
+                    offer: offer
+                }));
+                this.debug('Offer sent to signaling server', 'success');
+            } else {
+                this.debug('WebSocket not open, cannot send offer', 'error', {
+                    readyState: this.socket ? this.socket.readyState : 'no socket'
+                });
+                this.showNotification('Connection lost. Please refresh and try again.', 'error');
+            }
         } catch (error) {
             this.debug('Error creating offer', 'error', error);
             console.error('Error creating offer:', error);
@@ -691,13 +763,21 @@ class VideoCallClient {
             await this.peerConnection.setLocalDescription(answer);
             this.debug('Sending answer to peer...', 'info');
             
-            this.socket.send(JSON.stringify({
-                type: 'answer',
-                room: this.roomId,
-                answer: answer
-            }));
-            this.debug('Answer sent successfully', 'success');
-            this.debug('Peer connection ready for screen sharing', 'success');
+            // Check if socket is open before sending
+            if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+                this.socket.send(JSON.stringify({
+                    type: 'answer',
+                    room: this.roomId,
+                    answer: answer
+                }));
+                this.debug('Answer sent successfully', 'success');
+                this.debug('Peer connection ready for screen sharing', 'success');
+            } else {
+                this.debug('WebSocket not open, cannot send answer', 'error', {
+                    readyState: this.socket ? this.socket.readyState : 'no socket'
+                });
+                this.showNotification('Connection lost. Please refresh and try again.', 'error');
+            }
         } catch (error) {
             this.debug('Error handling offer', 'error', error);
             console.error('Error handling offer:', error);
