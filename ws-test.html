@@ -1,0 +1,119 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WebSocket Test</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:16px}
+    #log{white-space:pre-wrap;background:#0b0b0b;color:#e6e6e6;padding:12px;border-radius:6px;height:60vh;overflow:auto}
+    button{margin:8px 0;padding:8px 12px}
+  </style>
+</head>
+<body>
+  <h1>WebSocket Diagnostic</h1>
+  <p>This page will attempt to open a WebSocket to the same origin and print detailed events (open/error/close/message).</p>
+
+  <div>
+    <button id="connectBtn">Connect</button>
+    <button id="closeBtn" disabled>Close</button>
+    <button id="healthBtn">Check /health</button>
+  </div>
+
+  <div id="log"></div>
+
+  <script>
+    const logEl = document.getElementById('log');
+    const connectBtn = document.getElementById('connectBtn');
+    const closeBtn = document.getElementById('closeBtn');
+    const healthBtn = document.getElementById('healthBtn');
+
+    function log(...args) {
+      const time = new Date().toLocaleTimeString();
+      logEl.textContent += `[${time}] ` + args.map(a => {
+        try { return typeof a === 'string' ? a : JSON.stringify(a, null, 2); } catch (e) { return String(a); }
+      }).join(' ') + '\n';
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(...args);
+    }
+
+    async function checkHealth(){
+      try{
+        log('Performing HTTP GET /health...');
+        const res = await fetch('/health', { method: 'GET', cache: 'no-store' });
+        const text = await res.text();
+        log('HTTP /health response:', { status: res.status, text });
+      } catch (err) {
+        log('HTTP /health fetch error:', err);
+      }
+    }
+
+    healthBtn.addEventListener('click', checkHealth);
+
+    let ws = null;
+
+    function buildWsUrl(){
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      // Use origin (host + optional port + pathname) root
+      return `${protocol}//${location.host}`;
+    }
+
+    connectBtn.addEventListener('click', () => {
+      if (ws) {
+        log('Already have a WebSocket instance.');
+        return;
+      }
+
+      const url = buildWsUrl();
+      log('Attempting WebSocket connection to', url);
+
+      try {
+        ws = new WebSocket(url);
+      } catch (err) {
+        log('WebSocket constructor threw error:', err);
+        ws = null;
+        return;
+      }
+
+      log('WebSocket object created, readyState:', ws.readyState);
+
+      ws.onopen = (ev) => {
+        log('onopen event', ev);
+        try { ws.send(JSON.stringify({ type: 'ping', ts: Date.now() })); } catch(_){}
+        connectBtn.disabled = true;
+        closeBtn.disabled = false;
+      };
+
+      ws.onmessage = (ev) => {
+        log('onmessage', { dataLength: ev.data ? ev.data.length : 0, dataSample: typeof ev.data === 'string' ? ev.data.substring(0, 300) : ev.data });
+      };
+
+      ws.onerror = (ev) => {
+        log('onerror event', ev);
+      };
+
+      ws.onclose = (ev) => {
+        log('onclose event', { code: ev.code, reason: ev.reason, wasClean: ev.wasClean, wasReceived: ev.wasClean === undefined ? 'unknown' : ev.wasClean });
+        ws = null;
+        connectBtn.disabled = false;
+        closeBtn.disabled = true;
+      };
+
+      // Show readyState periodically for the first few seconds
+      const states = ['CONNECTING(0)','OPEN(1)','CLOSING(2)','CLOSED(3)'];
+      const interval = setInterval(()=>{
+        if (!ws) { clearInterval(interval); return; }
+        log('current readyState:', states[ws.readyState] || ws.readyState);
+      }, 500);
+    });
+
+    closeBtn.addEventListener('click', () => {
+      if (!ws) return;
+      try { ws.close(1000, 'client-closed'); } catch(e) { log('error closing ws', e); }
+    });
+
+    // Auto-run health on load
+    checkHealth();
+  </script>
+</body>
+</html>
