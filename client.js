@@ -31,6 +31,14 @@ class VideoCallClient {
         };
         
         this.initializeEventListeners();
+        // Allow injecting TURN servers at runtime via a global `TURN_SERVERS` array
+        if (window.TURN_SERVERS && Array.isArray(window.TURN_SERVERS) && window.TURN_SERVERS.length) {
+            this.debug('Applying TURN servers from global TURN_SERVERS', 'info', window.TURN_SERVERS);
+            this.rtcConfiguration.iceServers = this.rtcConfiguration.iceServers.concat(window.TURN_SERVERS);
+        }
+
+        // Buffer for remote ICE candidates that arrive before remote description is set
+        this._remoteIceBuffer = [];
         this.initializeDebugBox();
     }
     
@@ -757,6 +765,18 @@ class VideoCallClient {
         try {
             this.debug('Setting remote description from offer...', 'info');
             await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
+            // Flush any buffered remote ICE candidates that arrived early
+            if (this._remoteIceBuffer && this._remoteIceBuffer.length) {
+                this.debug(`Flushing ${this._remoteIceBuffer.length} buffered remote ICE candidates`, 'info');
+                for (const c of this._remoteIceBuffer) {
+                    try {
+                        await this.peerConnection.addIceCandidate(new RTCIceCandidate(c));
+                    } catch (err) {
+                        this.debug('Error adding buffered ICE candidate', 'error', err);
+                    }
+                }
+                this._remoteIceBuffer = [];
+            }
             this.debug('Remote description set, creating answer...', 'info');
             const answer = await this.peerConnection.createAnswer();
             this.debug('Answer created, setting local description...', 'info');
@@ -793,6 +813,18 @@ class VideoCallClient {
             }
             this.debug('Setting remote description from answer...', 'info');
             await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+            // Flush buffered ICE candidates now that remote description exists
+            if (this._remoteIceBuffer && this._remoteIceBuffer.length) {
+                this.debug(`Flushing ${this._remoteIceBuffer.length} buffered remote ICE candidates`, 'info');
+                for (const c of this._remoteIceBuffer) {
+                    try {
+                        await this.peerConnection.addIceCandidate(new RTCIceCandidate(c));
+                    } catch (err) {
+                        this.debug('Error adding buffered ICE candidate', 'error', err);
+                    }
+                }
+                this._remoteIceBuffer = [];
+            }
             this.debug('Answer processed successfully, peer connection established', 'success');
             this.debug('Peer connection ready for screen sharing', 'success');
         } catch (error) {
@@ -803,8 +835,24 @@ class VideoCallClient {
     
     async handleIceCandidate(candidate) {
         try {
+            if (!this.peerConnection) {
+                this.debug('No peerConnection when receiving ICE candidate; buffering', 'warning');
+                this._remoteIceBuffer.push(candidate);
+                return;
+            }
+
+            // If remote description isn't set yet, buffer the candidate
+            const remoteDesc = this.peerConnection.remoteDescription;
+            if (!remoteDesc) {
+                this.debug('Remote description not set yet; buffering ICE candidate', 'info', candidate);
+                this._remoteIceBuffer.push(candidate);
+                return;
+            }
+
             await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
+            this.debug('Remote ICE candidate added successfully', 'info');
         } catch (error) {
+            this.debug('Error adding ICE candidate', 'error', error);
             console.error('Error adding ICE candidate:', error);
         }
     }

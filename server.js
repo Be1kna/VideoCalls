@@ -82,9 +82,23 @@ wss.on('connection', (ws, req) => {
     
     ws.on('message', (message) => {
         try {
+            console.log('Received raw message from client:', {
+                remoteAddress: req.socket && req.socket.remoteAddress,
+                raw: typeof message === 'string' ? (message.length > 200 ? message.substring(0,200) + '...' : message) : '<binary>'
+            });
             const data = JSON.parse(message);
-            
+
+            console.log('Parsed signaling message type:', data.type);
+
             switch (data.type) {
+                // simple ping/pong support for diagnostic pages
+                case 'ping':
+                    try {
+                        ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
+                    } catch (e) {
+                        console.warn('Failed to send pong', e);
+                    }
+                    break;
                 case 'join':
                     handleJoin(ws, data, () => {
                         currentRoom = data.room;
