@@ -481,11 +481,11 @@ body {
 
     .video-wrapper video {
         height: 100%;
-        object-fit: contain;
+        object-fit: cover; /* crop to square on small screens */
     }
 }
 
-/* Desktop / larger screens: keep 16:9 tiles and avoid page scrolling */
+/* Desktop / larger screens: use square tiles (cropped) but fit vertically to avoid scrolling */
 @media (min-width: 901px) {
     body {
         overflow: hidden;
@@ -495,23 +495,37 @@ body {
         height: 100vh;
     }
 
-    /* Give the video area a calculated height so header and controls remain visible */
+    /* Calculate available vertical space so two square columns fit without scrolling */
     .video-container {
         height: calc(100vh - 160px); /* header + controls ~160px */
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(2, 1fr); /* two columns for laptop/desktop */
         gap: 20px;
         padding: 20px;
-        overflow: auto;
+        align-content: center;
+        justify-items: stretch;
+        overflow: hidden;
     }
 
+    /* Force square tiles and limit their max height to the available vertical space
+       so two columns will not cause page scroll. For typical 2-participant calls
+       this produces two side-by-side squares that fit vertically. */
     .video-wrapper {
-        aspect-ratio: 16 / 9;
-        max-height: calc((100vh - 160px) / 1);
+        aspect-ratio: 1 / 1;
+        max-height: calc(100vh - 160px);
+        width: 100%;
     }
 
     .video-wrapper video {
-        object-fit: cover; /* cover feels better on desktop; minimal letterboxing */
+        object-fit: cover; /* crop to fill square tiles */
+    }
+
+    /* When a video or its wrapper is fullscreen, do not crop — show full frame */
+    .video-wrapper:fullscreen video,
+    .video-wrapper:-webkit-full-screen video,
+    video:fullscreen,
+    video:-webkit-full-screen {
+        object-fit: contain !important;
     }
 
     /* Ensure call controls are always visible at the bottom */
