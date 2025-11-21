@@ -39,6 +39,9 @@ class VideoCallClient {
 
         // Buffer for remote ICE candidates that arrive before remote description is set
         this._remoteIceBuffer = [];
+        // Track current camera facing mode ('user' or 'environment') and whether multiple cameras exist
+        this._currentFacing = 'user';
+        this._hasMultipleVideoInputs = false;
         this.initializeDebugBox();
     }
     
@@ -100,6 +103,11 @@ class VideoCallClient {
         document.getElementById('toggleVideo').addEventListener('click', () => this.toggleVideo());
         document.getElementById('toggleAudio').addEventListener('click', () => this.toggleAudio());
         document.getElementById('toggleScreenShare').addEventListener('click', () => this.toggleScreenShare());
+        // Remote full screen and camera switch (if present)
+        const fsBtn = document.getElementById('remoteFullScreenBtn');
+        if (fsBtn) fsBtn.addEventListener('click', () => this.toggleRemoteFullScreen());
+        const switchBtn = document.getElementById('switchCameraBtn');
+        if (switchBtn) switchBtn.addEventListener('click', () => this.switchCamera());
         
         // Enter key to join
         document.getElementById('roomId').addEventListener('keypress', (e) => {
@@ -422,6 +430,13 @@ class VideoCallClient {
             
             const hasVideo = devices.some(device => device.kind === 'videoinput');
             const hasAudio = devices.some(device => device.kind === 'audioinput');
+            const videoInputCount = devices.filter(device => device.kind === 'videoinput').length;
+            this._hasMultipleVideoInputs = videoInputCount > 1;
+            // Show/hide switch camera button depending on device capability
+            const switchBtn = document.getElementById('switchCameraBtn');
+            if (switchBtn) {
+                switchBtn.style.display = this._hasMultipleVideoInputs ? 'inline-flex' : 'none';
+            }
             this.debug(`Video devices: ${hasVideo}, Audio devices: ${hasAudio}`, 'info');
 
             // Try with ideal constraints first
@@ -487,6 +502,16 @@ class VideoCallClient {
             
             this.updateConnectionStatus('Connected', 'connected');
             this.debug('getUserMedia completed successfully', 'success');
+            // Update current facing if available from settings
+            try {
+                const vTrack = this.localStream.getVideoTracks()[0];
+                if (vTrack && vTrack.getSettings) {
+                    const s = vTrack.getSettings();
+                    if (s.facingMode) this._currentFacing = s.facingMode;
+                }
+            } catch (e) {
+                /* ignore */
+            }
         } catch (error) {
             console.error('Error accessing media devices:', error);
             console.error('Error name:', error.name);
@@ -1130,6 +1155,136 @@ class VideoCallClient {
                 this.screenStream.getTracks().forEach(track => track.stop());
                 this.screenStream = null;
             }
+        }
+    }
+
+    async toggleRemoteFullScreen() {
+        const remoteVideo = document.getElementById('remoteVideo');
+        if (!remoteVideo) return;
+
+        try {
+            // If already fullscreen, exit
+            const isFs = document.fullscreenElement === remoteVideo || document.webkitFullscreenElement === remoteVideo || document.mozFullScreenElement === remoteVideo;
+            if (isFs) {
+                if (document.exitFullscreen) await document.exitFullscreen();
+                else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+                else if (document.mozCancelFullScreen) document.mozCancelFullScreen();
+                this.debug('Exited full screen for remote video', 'info');
+                return;
+            }
+
+            // Prefer standardized API
+            if (remoteVideo.requestFullscreen) {
+                await remoteVideo.requestFullscreen();
+            } else if (remoteVideo.webkitEnterFullscreen) {
+                // iOS Safari (on some versions)
+                try { remoteVideo.webkitEnterFullscreen(); } catch (e) { this.debug('webkitEnterFullscreen failed', 'warning', e); }
+            } else if (remoteVideo.webkitRequestFullscreen) {
+                try { remoteVideo.webkitRequestFullscreen(); } catch (e) { this.debug('webkitRequestFullscreen failed', 'warning', e); }
+            } else if (remoteVideo.mozRequestFullScreen) {
+                await remoteVideo.mozRequestFullScreen();
+            } else {
+                this.debug('Fullscreen API not available', 'warning');
+            }
+
+            this.debug('Requested full screen for remote video', 'info');
+        } catch (err) {
+            this.debug('Error toggling remote fullscreen', 'error', err);
+        }
+    }
+
+    async switchCamera() {
+        this.debug('Switch camera requested', 'info');
+
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            this.showNotification('Camera switching not supported in this browser', 'error');
+            return;
+        }
+
+        if (!this._hasMultipleVideoInputs) {
+            this.debug('No multiple video inputs detected; cannot switch camera', 'warning');
+            this.showNotification('No alternative camera found', 'warning');
+            return;
+        }
+
+        const desiredFacing = this._currentFacing === 'user' ? 'environment' : 'user';
+        this.debug(`Attempting to switch camera to: ${desiredFacing}`, 'info');
+        const constraints = { video: { facingMode: { ideal: desiredFacing } }, audio: false };
+
+        try {
+            // Try to get a new stream with the desired facingMode
+            const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+            const newTrack = newStream.getVideoTracks()[0];
+            if (!newTrack) throw new Error('No video track obtained when switching camera');
+
+            // Replace track in localStream
+            const oldTrack = this.localStream && this.localStream.getVideoTracks()[0];
+            if (oldTrack) {
+                try {
+                    oldTrack.stop();
+                } catch (e) {
+                    this.debug('Error stopping old video track', 'warning', e);
+                }
+                try {
+                    this.localStream.removeTrack(oldTrack);
+                } catch (e) { /* ignore on some browsers */ }
+            }
+
+            try {
+                this.localStream.addTrack(newTrack);
+            } catch (e) {
+                this.debug('addTrack failed (browser may not allow adding track to existing stream), creating new local stream object', 'warning', e);
+                // Fallback: create a new MediaStream combining newTrack and existing audio
+                const newLocal = new MediaStream();
+                newLocal.addTrack(newTrack);
+                const audioTrack = this.localStream && this.localStream.getAudioTracks()[0];
+                if (audioTrack) newLocal.addTrack(audioTrack);
+                this.localStream = newLocal;
+            }
+
+            // Update local video element
+            const localVideo = document.getElementById('localVideo');
+            if (localVideo) {
+                localVideo.srcObject = this.localStream;
+                try { await localVideo.play(); } catch (e) { /* ignore autoplay block */ }
+            }
+
+            // Replace track in PeerConnection sender if exists
+            if (this.peerConnection) {
+                const sender = this.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+                if (sender) {
+                    try {
+                        await sender.replaceTrack(newTrack);
+                        this.debug('Replaced video sender track with new camera track', 'success');
+                    } catch (err) {
+                        this.debug('Failed to replace sender track, attempting addTrack fallback', 'warning', err);
+                        try {
+                            this.peerConnection.addTrack(newTrack, this.localStream);
+                        } catch (addErr) {
+                            this.debug('Failed to add new track to peer connection', 'error', addErr);
+                        }
+                    }
+                } else {
+                    this.debug('No video sender found to replace, adding track instead', 'info');
+                    try { this.peerConnection.addTrack(newTrack, this.localStream); } catch (e) { this.debug('addTrack failed', 'error', e); }
+                }
+            }
+
+            // Update internal facing state
+            this._currentFacing = desiredFacing;
+            this.debug(`Camera switched to ${desiredFacing}`, 'success');
+            this.showNotification('Camera switched', 'success');
+        } catch (error) {
+            this.debug('Error switching camera', 'error', error);
+            // Try a more robust fallback using deviceId enumeration
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoInputs = devices.filter(d => d.kind === 'videoinput');
+                this.debug('Available video inputs', 'info', videoInputs);
+            } catch (e) {
+                this.debug('Error enumerating devices during camera switch fallback', 'warning', e);
+            }
+            this.showNotification('Unable to switch camera on this device/browser', 'error');
         }
     }
     
