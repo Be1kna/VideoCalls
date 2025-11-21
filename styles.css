@@ -468,6 +468,67 @@ body {
     }
 }
 
+/* Mobile-friendly controls: larger touch targets and placed above debug box */
+@media (max-width: 768px) {
+    .control-btn {
+        width: 56px;
+        height: 56px;
+        border-radius: 14px;
+    }
+
+    /* Move video control overlays to bottom center for easier thumb reach */
+    .video-controls-overlay {
+        top: auto;
+        right: auto;
+        left: 50%;
+        transform: translateX(-50%);
+        bottom: 12px;
+        gap: 12px;
+        padding: 6px 10px;
+        background: rgba(0,0,0,0.35);
+        border-radius: 30px;
+        z-index: 2100; /* Ensure controls sit above the debug box */
+    }
+
+    .video-wrapper .video-label {
+        top: 10px;
+        left: 10px;
+        font-size: 0.85rem;
+        padding: 6px 10px;
+    }
+
+    /* Make call controls sit above debug box */
+    .call-controls {
+        z-index: 2100;
+        position: relative;
+    }
+}
+
+/* Ensure debug box doesn't block interaction with call controls on mobile */
+@media (max-width: 768px) {
+    .debug-box {
+        z-index: 2000;
+        bottom: 18px;
+        right: 20px;
+        left: 20px;
+        max-height: 160px;
+        border-radius: 12px;
+    }
+
+    .debug-box.collapsed {
+        max-height: 48px;
+    }
+
+    .debug-header {
+        padding: 8px 12px;
+    }
+
+    .debug-content {
+        max-height: 110px;
+        font-size: 0.75rem;
+    }
+}
+
 /* Loading Animation */
 @keyframes pulse {
     0%, 100% {
