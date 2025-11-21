@@ -23,12 +23,14 @@ body {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     min-height: 100vh;
     color: var(--text-primary);
-    overflow: hidden;
+    /* allow scrolling so small screens can pan/zoom */
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
 }
 
 .container {
     width: 100%;
-    height: 100vh;
+    min-height: 100vh;
     position: relative;
 }
 
@@ -261,7 +263,6 @@ body {
     grid-template-columns: 1fr 1fr;
     gap: 20px;
     padding: 20px;
-    overflow: hidden;
 }
 
 .video-wrapper {
@@ -271,6 +272,7 @@ body {
     overflow: hidden;
     aspect-ratio: 16/9;
     box-shadow: var(--shadow);
+    max-width: 100%;
 }
 
 .video-wrapper video {
@@ -465,6 +467,21 @@ body {
         flex-direction: column;
         gap: 15px;
         align-items: flex-start;
+    }
+}
+
+/* Ensure layout can be scrolled vertically on narrow screens and video boxes scale */
+@media (max-width: 900px) {
+    .video-wrapper {
+        aspect-ratio: auto;
+        height: auto;
+        min-height: 30vh;
+        max-height: 60vh;
+    }
+
+    .video-wrapper video {
+        height: 100%;
+        object-fit: contain;
     }
 }
 

@@ -42,6 +42,7 @@ class VideoCallClient {
         // Track current camera facing mode ('user' or 'environment') and whether multiple cameras exist
         this._currentFacing = 'user';
         this._hasMultipleVideoInputs = false;
+        this._videoInputDevices = [];
         this.initializeDebugBox();
     }
     
@@ -423,21 +424,14 @@ class VideoCallClient {
         this.debug('getUserMedia API is available', 'success');
 
         try {
-            // First, try to get available devices to provide better error messages
-            this.debug('Enumerating devices...', 'info');
-            const devices = await navigator.mediaDevices.enumerateDevices();
-            this.debug(`Found ${devices.length} devices`, 'info', devices);
-            
+            // Try to enumerate devices before permission (may return limited info)
+            this.debug('Enumerating devices (pre-permission)...', 'info');
+            let devices = [];
+            try { devices = await navigator.mediaDevices.enumerateDevices(); } catch (e) { this.debug('enumerateDevices failed (pre-permission)', 'warning', e); }
+            this.debug(`Found ${devices.length} devices (pre)`, 'info', devices);
             const hasVideo = devices.some(device => device.kind === 'videoinput');
             const hasAudio = devices.some(device => device.kind === 'audioinput');
-            const videoInputCount = devices.filter(device => device.kind === 'videoinput').length;
-            this._hasMultipleVideoInputs = videoInputCount > 1;
-            // Show/hide switch camera button depending on device capability
-            const switchBtn = document.getElementById('switchCameraBtn');
-            if (switchBtn) {
-                switchBtn.style.display = this._hasMultipleVideoInputs ? 'inline-flex' : 'none';
-            }
-            this.debug(`Video devices: ${hasVideo}, Audio devices: ${hasAudio}`, 'info');
+            this.debug(`Video devices (pre): ${hasVideo}, Audio devices (pre): ${hasAudio}`, 'info');
 
             // Try with ideal constraints first
             let constraints = {
@@ -511,6 +505,27 @@ class VideoCallClient {
                 }
             } catch (e) {
                 /* ignore */
+            }
+            // Re-enumerate devices after permission to get deviceIds and labels
+            try {
+                const devicesAfter = await navigator.mediaDevices.enumerateDevices();
+                this.debug('Enumerated devices (post-permission)', 'info', devicesAfter);
+                const videoInputs = devicesAfter.filter(d => d.kind === 'videoinput');
+                const unique = [];
+                const ids = new Set();
+                videoInputs.forEach(d => {
+                    if (!ids.has(d.deviceId)) {
+                        ids.add(d.deviceId);
+                        unique.push({ deviceId: d.deviceId, label: d.label || `Camera ${unique.length+1}` });
+                    }
+                });
+                this._videoInputDevices = unique;
+                this._hasMultipleVideoInputs = unique.length > 1;
+                this.debug(`Video input devices count: ${unique.length}`, 'info', unique);
+                const switchBtn = document.getElementById('switchCameraBtn');
+                if (switchBtn) switchBtn.style.display = this._hasMultipleVideoInputs ? 'inline-flex' : 'none';
+            } catch (e) {
+                this.debug('Failed to re-enumerate devices after permission', 'warning', e);
             }
         } catch (error) {
             console.error('Error accessing media devices:', error);
@@ -1206,84 +1221,90 @@ class VideoCallClient {
             this.showNotification('No alternative camera found', 'warning');
             return;
         }
-
-        const desiredFacing = this._currentFacing === 'user' ? 'environment' : 'user';
-        this.debug(`Attempting to switch camera to: ${desiredFacing}`, 'info');
-        const constraints = { video: { facingMode: { ideal: desiredFacing } }, audio: false };
-
+        // Prefer switching by deviceId when possible
         try {
-            // Try to get a new stream with the desired facingMode
-            const newStream = await navigator.mediaDevices.getUserMedia(constraints);
-            const newTrack = newStream.getVideoTracks()[0];
-            if (!newTrack) throw new Error('No video track obtained when switching camera');
-
-            // Replace track in localStream
-            const oldTrack = this.localStream && this.localStream.getVideoTracks()[0];
-            if (oldTrack) {
+            if (this._videoInputDevices && this._videoInputDevices.length > 1) {
+                // Find current deviceId from active track
+                const currentTrack = this.localStream && this.localStream.getVideoTracks()[0];
+                let currentDeviceId = null;
                 try {
-                    oldTrack.stop();
-                } catch (e) {
-                    this.debug('Error stopping old video track', 'warning', e);
+                    const settings = currentTrack.getSettings();
+                    if (settings && settings.deviceId) currentDeviceId = settings.deviceId;
+                } catch (e) { /* ignore */ }
+
+                // Choose next device in list
+                const ids = this._videoInputDevices.map(d => d.deviceId);
+                let nextIndex = 0;
+                if (currentDeviceId) {
+                    const idx = ids.indexOf(currentDeviceId);
+                    nextIndex = idx >= 0 ? (idx + 1) % ids.length : 0;
                 }
-                try {
-                    this.localStream.removeTrack(oldTrack);
-                } catch (e) { /* ignore on some browsers */ }
+                const nextDeviceId = ids[nextIndex];
+                this.debug('Switching to deviceId', 'info', nextDeviceId);
+
+                const constraints = { video: { deviceId: { exact: nextDeviceId } }, audio: false };
+                const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+                const newTrack = newStream.getVideoTracks()[0];
+                if (!newTrack) throw new Error('No video track obtained when switching camera');
+
+                // Stop and remove old track
+                const oldTrack = this.localStream && this.localStream.getVideoTracks()[0];
+                if (oldTrack) {
+                    try { oldTrack.stop(); } catch (e) { this.debug('Error stopping old track', 'warning', e); }
+                    try { this.localStream.removeTrack(oldTrack); } catch (e) { /* ignore */ }
+                }
+
+                try { this.localStream.addTrack(newTrack); } catch (e) {
+                    this.debug('addTrack failed; creating new local stream', 'warning', e);
+                    const newLocal = new MediaStream();
+                    newLocal.addTrack(newTrack);
+                    const audioTrack = this.localStream && this.localStream.getAudioTracks()[0];
+                    if (audioTrack) newLocal.addTrack(audioTrack);
+                    this.localStream = newLocal;
+                }
+
+                // Update local video element
+                const localVideo = document.getElementById('localVideo');
+                if (localVideo) { localVideo.srcObject = this.localStream; try { await localVideo.play(); } catch(e){} }
+
+                // Replace sender track
+                if (this.peerConnection) {
+                    const sender = this.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+                    if (sender) {
+                        try { await sender.replaceTrack(newTrack); this.debug('Replaced sender track', 'success'); }
+                        catch (err) { this.debug('replaceTrack failed, attempting addTrack', 'warning', err); try { this.peerConnection.addTrack(newTrack, this.localStream); } catch(e){ this.debug('addTrack fallback failed', 'error', e);} }
+                    } else {
+                        try { this.peerConnection.addTrack(newTrack, this.localStream); } catch(e){ this.debug('addTrack failed', 'error', e); }
+                    }
+                }
+
+                this._currentFacing = newTrack.getSettings && newTrack.getSettings().facingMode ? newTrack.getSettings().facingMode : this._currentFacing;
+                this.debug('Camera switched to deviceId', 'success', nextDeviceId);
+                this.showNotification('Camera switched', 'success');
+                return;
             }
 
-            try {
-                this.localStream.addTrack(newTrack);
-            } catch (e) {
-                this.debug('addTrack failed (browser may not allow adding track to existing stream), creating new local stream object', 'warning', e);
-                // Fallback: create a new MediaStream combining newTrack and existing audio
-                const newLocal = new MediaStream();
-                newLocal.addTrack(newTrack);
-                const audioTrack = this.localStream && this.localStream.getAudioTracks()[0];
-                if (audioTrack) newLocal.addTrack(audioTrack);
-                this.localStream = newLocal;
-            }
+            // Fallback: try facingMode toggle if deviceId list not available
+            const desiredFacing = this._currentFacing === 'user' ? 'environment' : 'user';
+            this.debug(`Attempting facingMode switch to: ${desiredFacing}`, 'info');
+            const constraints2 = { video: { facingMode: { ideal: desiredFacing } }, audio: false };
+            const newStream2 = await navigator.mediaDevices.getUserMedia(constraints2);
+            const newTrack2 = newStream2.getVideoTracks()[0];
+            if (!newTrack2) throw new Error('No video track obtained when switching camera (facingMode)');
 
-            // Update local video element
-            const localVideo = document.getElementById('localVideo');
-            if (localVideo) {
-                localVideo.srcObject = this.localStream;
-                try { await localVideo.play(); } catch (e) { /* ignore autoplay block */ }
-            }
-
-            // Replace track in PeerConnection sender if exists
+            const oldTrack2 = this.localStream && this.localStream.getVideoTracks()[0];
+            if (oldTrack2) { try { oldTrack2.stop(); } catch(e){} try { this.localStream.removeTrack(oldTrack2); } catch(e){} }
+            try { this.localStream.addTrack(newTrack2); } catch(e) { const newLocal = new MediaStream(); newLocal.addTrack(newTrack2); const audioTrack = this.localStream && this.localStream.getAudioTracks()[0]; if (audioTrack) newLocal.addTrack(audioTrack); this.localStream = newLocal; }
             if (this.peerConnection) {
                 const sender = this.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
-                if (sender) {
-                    try {
-                        await sender.replaceTrack(newTrack);
-                        this.debug('Replaced video sender track with new camera track', 'success');
-                    } catch (err) {
-                        this.debug('Failed to replace sender track, attempting addTrack fallback', 'warning', err);
-                        try {
-                            this.peerConnection.addTrack(newTrack, this.localStream);
-                        } catch (addErr) {
-                            this.debug('Failed to add new track to peer connection', 'error', addErr);
-                        }
-                    }
-                } else {
-                    this.debug('No video sender found to replace, adding track instead', 'info');
-                    try { this.peerConnection.addTrack(newTrack, this.localStream); } catch (e) { this.debug('addTrack failed', 'error', e); }
-                }
+                if (sender) { try { await sender.replaceTrack(newTrack2); } catch(e){ try{ this.peerConnection.addTrack(newTrack2,this.localStream);}catch(_){} } }
             }
-
-            // Update internal facing state
             this._currentFacing = desiredFacing;
             this.debug(`Camera switched to ${desiredFacing}`, 'success');
             this.showNotification('Camera switched', 'success');
         } catch (error) {
             this.debug('Error switching camera', 'error', error);
-            // Try a more robust fallback using deviceId enumeration
-            try {
-                const devices = await navigator.mediaDevices.enumerateDevices();
-                const videoInputs = devices.filter(d => d.kind === 'videoinput');
-                this.debug('Available video inputs', 'info', videoInputs);
-            } catch (e) {
-                this.debug('Error enumerating devices during camera switch fallback', 'warning', e);
-            }
+            try { const devices = await navigator.mediaDevices.enumerateDevices(); this.debug('Available video inputs', 'info', devices.filter(d=>d.kind==='videoinput')); } catch(e){ this.debug('enumerateDevices fallback failed', 'warning', e); }
             this.showNotification('Unable to switch camera on this device/browser', 'error');
         }
     }
