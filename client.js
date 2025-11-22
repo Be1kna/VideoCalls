@@ -41,9 +41,7 @@ class VideoCallClient {
                 { urls: 'stun:stun1.l.google.com:19302' },
                 { urls: 'stun:stun2.l.google.com:19302' },
                 { urls: 'stun:stun3.l.google.com:19302' },
-                { urls: 'stun:stun4.l.google.com:19302' },
-                // Add TURN servers here if needed for strict NATs
-                // You can use services like Twilio, Xirsys, or self-hosted coturn
+                { urls: 'stun:stun4.l.google.com:19302' }
             ]
         };
         
@@ -72,36 +70,6 @@ class VideoCallClient {
             if (rv) rv.addEventListener('webkitendfullscreen', () => { try { rv.play(); } catch(e){} });
         } catch (e) {
             this.debug('Could not attach fullscreen listeners', 'warning', e);
-        }
-    }
-
-    _onFullscreenChange() {
-        // When exiting fullscreen, some mobile browsers pause playback — try to resume
-        try {
-            const fs = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement;
-            if (!fs) {
-                const remoteVideo = document.getElementById('remoteVideo');
-                const localVideo = document.getElementById('localVideo');
-                if (remoteVideo) {
-                    remoteVideo.playsInline = true;
-                    remoteVideo.setAttribute('playsinline', '');
-                    remoteVideo.play().then(() => this.debug('Resumed remote video after fullscreen exit', 'info')).catch(err => {
-                        this.debug('Auto-play resume failed', 'warning', err);
-                    }).finally(() => {
-                        // If still paused (due to autoplay restrictions), show resume button so user can tap
-                        try {
-                            if (remoteVideo.paused) this._showRemoteResumeButton(remoteVideo);
-                        } catch (e) {}
-                    });
-                }
-                if (localVideo) {
-                    localVideo.playsInline = true;
-                    localVideo.setAttribute('playsinline', '');
-                    localVideo.play().catch(() => {});
-                }
-            }
-        } catch (e) {
-            this.debug('Error in fullscreen change handler', 'warning', e);
         }
     }
 
