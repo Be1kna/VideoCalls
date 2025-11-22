@@ -1,3 +1,20 @@
+// Platform-aware permission and screen sharing helpers for Capacitor/mobile
+let isCapacitor = false;
+try {
+    isCapacitor = !!window.Capacitor && !!window.Capacitor.isNative;
+} catch (e) {}
+
+async function ensurePermissions() {
+    if (isCapacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Permissions) {
+        const { Permissions } = window.Capacitor.Plugins;
+        try {
+            await Permissions.request({ name: 'camera' });
+            await Permissions.request({ name: 'microphone' });
+        } catch (e) {}
+    }
+    // On web, browser will prompt automatically
+}
+
 // WebRTC Video Call Client
 class VideoCallClient {
     constructor() {
@@ -994,33 +1011,35 @@ class VideoCallClient {
         try {
             if (!this.isScreenSharing) {
                 this.debug('Starting screen share...', 'info');
-                
-                // Check if displayMedia is available
-                if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+                if (isCapacitor && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.ScreenCapture) {
+                    // Use Capacitor plugin for mobile
+                    try {
+                        this.screenStream = await window.Capacitor.Plugins.ScreenCapture.start();
+                        this.debug('ScreenCapture plugin stream obtained', 'success');
+                    } catch (e) {
+                        this.debug('Capacitor ScreenCapture plugin error', 'error', e);
+                        this.showNotification('Screen sharing plugin error', 'error');
+                        return;
+                    }
+                } else if (navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
+                    this.debug('Requesting display media...', 'info');
+                    this.screenStream = await navigator.mediaDevices.getDisplayMedia({
+                        video: { cursor: 'always', displaySurface: 'monitor' },
+                        audio: true
+                    });
+                    this.debug('Display media obtained', 'success', {
+                        videoTracks: this.screenStream.getVideoTracks().length,
+                        audioTracks: this.screenStream.getAudioTracks().length
+                    });
+                } else {
                     const errorMsg = 'Screen sharing is not supported in your browser';
                     this.debug(errorMsg, 'error');
                     this.showNotification(errorMsg, 'error');
                     return;
                 }
-                
-                this.debug('Requesting display media...', 'info');
-                // Start screen sharing
-                this.screenStream = await navigator.mediaDevices.getDisplayMedia({
-                    video: {
-                        cursor: 'always',
-                        displaySurface: 'monitor'
-                    },
-                    audio: true
-                });
-                
-                this.debug('Display media obtained', 'success', {
-                    videoTracks: this.screenStream.getVideoTracks().length,
-                    audioTracks: this.screenStream.getAudioTracks().length
-                });
-                
+                // ...existing code for handling screenStream, videoTrack, PIP, etc...
                 const videoTrack = this.screenStream.getVideoTracks()[0];
                 const audioTrack = this.screenStream.getAudioTracks()[0];
-                
                 if (!videoTrack) {
                     this.debug('No video track in screen stream', 'error');
                     this.showNotification('Failed to get screen video track', 'error');
@@ -1030,7 +1049,6 @@ class VideoCallClient {
                     }
                     return;
                 }
-                
                 this.debug('Screen video track details', 'info', {
                     id: videoTrack.id,
                     label: videoTrack.label,
@@ -1038,13 +1056,11 @@ class VideoCallClient {
                     readyState: videoTrack.readyState,
                     settings: videoTrack.getSettings()
                 });
-                
                 // Update local video to show screen share (even without peer connection)
                 // If camera is also on, show camera in picture-in-picture
                 this.debug('Updating local video element with screen stream', 'info');
                 const localVideo = document.getElementById('localVideo');
                 const localCameraPip = document.getElementById('localCameraPip');
-                
                 // Show screen share in main video
                 localVideo.srcObject = this.screenStream;
                 this.debug('Screen share set as main video source', 'success');
@@ -1584,7 +1600,8 @@ class VideoCallClient {
 }
 
 // Initialize when DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    await ensurePermissions();
     window.videoCallClient = new VideoCallClient();
 });
 
