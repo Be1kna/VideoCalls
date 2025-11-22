@@ -487,7 +487,7 @@ body {
 
 /* Desktop / larger screens: use square tiles (cropped) but fit vertically to avoid scrolling */
 @media (min-width: 901px) {
-    body {
+    body.in-call {
         overflow: hidden;
     }
 
@@ -502,6 +502,7 @@ body {
         grid-template-columns: repeat(2, 1fr); /* two columns for laptop/desktop */
         gap: 20px;
         padding: 20px;
+        padding-bottom: 120px; /* leave space for controls so videos aren't covered */
         align-content: center;
         justify-items: stretch;
         overflow: hidden;
@@ -512,7 +513,8 @@ body {
        this produces two side-by-side squares that fit vertically. */
     .video-wrapper {
         aspect-ratio: 1 / 1;
-        max-height: calc(100vh - 160px);
+        /* Reduce max-height slightly to account for bottom controls padding */
+        max-height: calc(100vh - 160px - 40px);
         width: 100%;
     }
 

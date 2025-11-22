@@ -61,6 +61,40 @@ class VideoCallClient {
         this._hasMultipleVideoInputs = false;
         this._videoInputDevices = [];
         this.initializeDebugBox();
+        // Fullscreen resume handling: ensure playback resumes when exiting fullscreen on mobile
+        try {
+            document.addEventListener('fullscreenchange', () => this._onFullscreenChange());
+            document.addEventListener('webkitfullscreenchange', () => this._onFullscreenChange());
+            document.addEventListener('mozfullscreenchange', () => this._onFullscreenChange());
+            // video-specific iOS event
+            const rv = document.getElementById('remoteVideo');
+            if (rv) rv.addEventListener('webkitendfullscreen', () => { try { rv.play(); } catch(e){} });
+        } catch (e) {
+            this.debug('Could not attach fullscreen listeners', 'warning', e);
+        }
+    }
+
+    _onFullscreenChange() {
+        // When exiting fullscreen, some mobile browsers pause playback — try to resume
+        try {
+            const fs = document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement;
+            if (!fs) {
+                const remoteVideo = document.getElementById('remoteVideo');
+                const localVideo = document.getElementById('localVideo');
+                if (remoteVideo) {
+                    remoteVideo.playsInline = true;
+                    remoteVideo.setAttribute('playsinline', '');
+                    remoteVideo.play().then(() => this.debug('Resumed remote video after fullscreen exit', 'info')).catch(err => this.debug('Auto-play resume failed', 'warning', err));
+                }
+                if (localVideo) {
+                    localVideo.playsInline = true;
+                    localVideo.setAttribute('playsinline', '');
+                    localVideo.play().catch(() => {});
+                }
+            }
+        } catch (e) {
+            this.debug('Error in fullscreen change handler', 'warning', e);
+        }
     }
     
     initializeDebugBox() {
@@ -185,6 +219,19 @@ class VideoCallClient {
             // Switch to call screen
             document.getElementById('preCallScreen').classList.remove('active');
             document.getElementById('callScreen').classList.add('active');
+            // Mark body as in-call so desktop overflow:hidden only applies during call
+            document.body.classList.add('in-call');
+            // Update local label to the user's chosen name
+            try {
+                const localVideo = document.getElementById('localVideo');
+                if (localVideo) {
+                    const wrapper = localVideo.closest('.video-wrapper');
+                    if (wrapper) {
+                        const label = wrapper.querySelector('.video-label');
+                        if (label) label.textContent = this.userName || 'You';
+                    }
+                }
+            } catch (e) { this.debug('Could not set local label', 'warning', e); }
             document.getElementById('displayRoomId').textContent = roomId;
             
             this.updateConnectionStatus('Connecting...');
@@ -389,6 +436,11 @@ class VideoCallClient {
             case 'user-joined':
                 this.debug(`User joined: ${message.name}`, 'info');
                 this.showNotification(`${message.name} joined the call`, 'info');
+                // Set remote label to the joining user's name
+                try {
+                    const rl = document.getElementById('remoteLabel');
+                    if (rl) rl.textContent = message.name || 'Remote Participant';
+                } catch (e) { this.debug('Could not set remote label', 'warning', e); }
                 this.debug('Creating peer connection for new user...', 'info');
                 await this.createPeerConnection();
                 this.debug('Peer connection created, creating offer...', 'info');
@@ -415,6 +467,8 @@ class VideoCallClient {
                 this.debug(`User left: ${message.name}`, 'warning');
                 this.showNotification(`${message.name} left the call`, 'info');
                 this.handleRemoteLeave();
+                // Reset remote label
+                try { const rl = document.getElementById('remoteLabel'); if (rl) rl.textContent = 'Waiting for participant...'; } catch(e){}
                 break;
                 
             case 'error':
@@ -671,6 +725,16 @@ class VideoCallClient {
             if (event.streams && event.streams.length > 0) {
                 const remoteVideo = document.getElementById('remoteVideo');
                 remoteVideo.srcObject = event.streams[0];
+                // Ensure playsInline for mobile and attempt to auto-resume playback
+                try {
+                    remoteVideo.playsInline = true;
+                    remoteVideo.setAttribute('playsinline', '');
+                    remoteVideo.play().then(()=>{
+                        this.debug('Remote video play started', 'success');
+                    }).catch(err => {
+                        this.debug('Remote video play failed (will attempt resume later)', 'warning', err);
+                    });
+                } catch (e) { this.debug('Could not set playsInline or play remoteVideo', 'warning', e); }
                 this.remoteStream = event.streams[0];
                 document.getElementById('remoteLabel').textContent = 'Remote Participant';
                 this.updateConnectionStatus('Connected', 'connected');
@@ -1498,6 +1562,9 @@ class VideoCallClient {
         // Switch back to pre-call screen
         document.getElementById('callScreen').classList.remove('active');
         document.getElementById('preCallScreen').classList.add('active');
+
+        // Remove in-call body marker so pre-call screen can scroll normally
+        try { document.body.classList.remove('in-call'); } catch(e) {}
         
         // Clear video elements
         document.getElementById('localVideo').srcObject = null;
