@@ -500,15 +500,27 @@ body {
 
     /* Calculate available vertical space so two square columns fit without scrolling */
     .video-container {
-        height: calc(100vh - 160px); /* header + controls ~160px */
+        /* JS will set --square-size and toggle .two-column / .single-column */
+        --square-size: 320px;
         display: grid;
-        grid-template-columns: repeat(2, 1fr); /* two columns for laptop/desktop */
         gap: 20px;
         padding: 20px;
-        padding-bottom: 120px; /* leave space for controls so videos aren't covered */
+        padding-bottom: 180px; /* leave more space for controls so videos aren't covered */
         align-content: center;
-        justify-items: stretch;
-        overflow: hidden;
+        justify-content: center;
+        justify-items: center;
+    }
+
+    /* Two-column layout: fixed squares side-by-side */
+    .video-container.two-column {
+        grid-template-columns: repeat(2, var(--square-size));
+        height: auto;
+    }
+
+    /* Single-column layout (stacked): squares full width up to --square-size */
+    .video-container.single-column {
+        grid-template-columns: 1fr;
+        align-content: start;
     }
 
     /* Force square tiles and limit their max height to the available vertical space
@@ -516,9 +528,22 @@ body {
        this produces two side-by-side squares that fit vertically. */
     .video-wrapper {
         aspect-ratio: 1 / 1;
-        /* Reduce max-height slightly to account for bottom controls padding */
-        max-height: calc(100vh - 160px - 40px);
+        display: block;
+        background: #000;
+        border-radius: 15px;
+        overflow: hidden;
+    }
+
+    /* In two-column mode, force wrapper width to the square size */
+    .video-container.two-column .video-wrapper {
+        width: var(--square-size);
+    }
+
+    /* In single-column (stacked) mode, make the wrapper use full width of container */
+    .video-container.single-column .video-wrapper {
         width: 100%;
+        max-width: var(--square-size);
+        margin: 0 auto;
     }
 
     .video-wrapper video {

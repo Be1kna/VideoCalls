@@ -231,6 +231,55 @@ class VideoCallClient {
         document.getElementById('yourName').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.joinRoom();
         });
+        // Update video grid layout on resize/orientation change
+        window.addEventListener('resize', () => this.updateVideoGridLayout());
+        window.addEventListener('orientationchange', () => setTimeout(() => this.updateVideoGridLayout(), 150));
+    }
+
+    updateVideoGridLayout() {
+        try {
+            const container = document.querySelector('.video-container');
+            if (!container) return;
+            const header = document.querySelector('.call-header');
+            const controls = document.querySelector('.call-controls');
+            const gap = 20; // must match CSS gap
+            const containerPaddingLeft = 20; // matches CSS padding
+            const containerPaddingRight = 20;
+
+            const headerH = header ? header.offsetHeight : 0;
+            const controlsH = controls ? controls.offsetHeight : 0;
+            // Small buffer so controls don't touch videos
+            const buffer = 20;
+            const availableHeight = Math.max(0, window.innerHeight - headerH - controlsH - buffer);
+
+            // Preferred square size is the available vertical space
+            let squareSize = availableHeight;
+
+            // Available content width inside container
+            const usableWidth = Math.max(0, window.innerWidth - (containerPaddingLeft + containerPaddingRight));
+
+            // If two squares fit horizontally (two * square + gap <= usableWidth) use two-column layout
+            if ((squareSize * 2 + gap) <= usableWidth) {
+                container.classList.add('two-column');
+                container.classList.remove('single-column');
+                container.style.setProperty('--square-size', `${squareSize}px`);
+                container.style.overflowY = 'hidden';
+                container.style.maxHeight = `${availableHeight}px`;
+            } else {
+                // Single column: square width is min(availableHeight, usableWidth)
+                let singleSize = Math.min(squareSize, usableWidth);
+                // On very narrow screens, subtract small padding to avoid touching edges
+                singleSize = Math.max(0, singleSize);
+                container.classList.add('single-column');
+                container.classList.remove('two-column');
+                container.style.setProperty('--square-size', `${singleSize}px`);
+                // Allow vertical scrolling when stacked and confine height
+                container.style.overflowY = 'auto';
+                container.style.maxHeight = `${availableHeight}px`;
+            }
+        } catch (e) {
+            this.debug('updateVideoGridLayout failed', 'warning', e);
+        }
     }
     
     createRoom() {
@@ -296,6 +345,8 @@ class VideoCallClient {
                 }
             } catch (e) { this.debug('Could not set local label', 'warning', e); }
             document.getElementById('displayRoomId').textContent = roomId;
+            // Update grid layout now that call screen is visible
+            try { this.updateVideoGridLayout(); } catch(e) { this.debug('updateVideoGridLayout error', 'warning', e); }
             
             this.updateConnectionStatus('Connecting...');
             this.debug('Join room process completed successfully', 'success');
@@ -1772,6 +1823,7 @@ class VideoCallClient {
 document.addEventListener('DOMContentLoaded', async () => {
     await ensurePermissions();
     window.videoCallClient = new VideoCallClient();
+    try { window.videoCallClient.updateVideoGridLayout(); } catch(e) {}
     // Ensure pre-call screen starts scrolled to top on initial load (fix deployed cropping)
     try {
         const pre = document.getElementById('preCallScreen');
