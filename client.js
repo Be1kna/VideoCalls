@@ -1655,6 +1655,16 @@ class VideoCallClient {
         document.getElementById('callScreen').classList.remove('active');
         document.getElementById('preCallScreen').classList.add('active');
 
+        // Ensure pre-call screen scroll is reset to top so title isn't cropped
+        try {
+            const pre = document.getElementById('preCallScreen');
+            if (pre) {
+                pre.scrollTop = 0;
+                const content = pre.querySelector('.pre-call-content');
+                if (content && content.scrollIntoView) content.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'auto' });
+            }
+        } catch (e) { this.debug('Could not reset pre-call scroll', 'warning', e); }
+
         // Remove in-call body marker so pre-call screen can scroll normally
         try { document.body.classList.remove('in-call'); } catch(e) {}
         
@@ -1762,5 +1772,14 @@ class VideoCallClient {
 document.addEventListener('DOMContentLoaded', async () => {
     await ensurePermissions();
     window.videoCallClient = new VideoCallClient();
+    // Ensure pre-call screen starts scrolled to top on initial load (fix deployed cropping)
+    try {
+        const pre = document.getElementById('preCallScreen');
+        if (pre) {
+            pre.scrollTop = 0;
+            const content = pre.querySelector('.pre-call-content');
+            if (content && content.scrollIntoView) content.scrollIntoView({ block: 'start', inline: 'nearest', behavior: 'auto' });
+        }
+    } catch (e) { console.warn('Could not reset pre-call scroll on load', e); }
 });
 
