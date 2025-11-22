@@ -951,7 +951,8 @@ class VideoCallClient {
                 this.socket.send(JSON.stringify({
                     type: 'offer',
                     room: this.roomId,
-                    offer: offer
+                    offer: offer,
+                    name: this.userName || 'Anonymous'
                 }));
                 this.debug('Offer sent to signaling server', 'success');
             } else {
@@ -999,7 +1000,8 @@ class VideoCallClient {
                 this.socket.send(JSON.stringify({
                     type: 'answer',
                     room: this.roomId,
-                    answer: answer
+                    answer: answer,
+                    name: this.userName || 'Anonymous'
                 }));
                 this.debug('Answer sent successfully', 'success');
                 this.debug('Peer connection ready for screen sharing', 'success');

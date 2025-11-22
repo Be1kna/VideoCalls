@@ -45,9 +45,12 @@ body {
 
 /* Pre-call Screen */
 #preCallScreen {
-    justify-content: center;
+    /* Start content at top so scrolling begins at the very top (prevents title cropping)
+       Keep horizontal centering via align-items. Add top padding for visual spacing. */
+    justify-content: flex-start;
     align-items: center;
-    padding: 20px;
+    padding: 60px 20px;
+    overflow-y: auto;
 }
 
 .pre-call-content {
