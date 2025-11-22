@@ -248,35 +248,80 @@ class VideoCallClient {
 
             const headerH = header ? header.offsetHeight : 0;
             const controlsH = controls ? controls.offsetHeight : 0;
-            // Small buffer so controls don't touch videos
-            const buffer = 20;
+            const buffer = 20; // small buffer so controls don't touch videos
             const availableHeight = Math.max(0, window.innerHeight - headerH - controlsH - buffer);
 
-            // Preferred square size is the available vertical space
-            let squareSize = availableHeight;
+            // Preferred square size is the available vertical space (desktop behavior)
+            const desktopSquare = Math.max(0, availableHeight);
 
             // Available content width inside container
             const usableWidth = Math.max(0, window.innerWidth - (containerPaddingLeft + containerPaddingRight));
 
-            // If two squares fit horizontally (two * square + gap <= usableWidth) use two-column layout
-            if ((squareSize * 2 + gap) <= usableWidth) {
+            // Decide layout:
+            // 1) If two desktop squares fit side-by-side -> two-column with desktopSquare
+            // 2) Else if usableWidth >= desktopSquare -> stacked but keep desktopSquare (scrollable)
+            // 3) Else (very narrow mobile) -> stacked, but square size = usableWidth (full-width squares)
+
+            let finalSquare = desktopSquare;
+            if ((desktopSquare * 2 + gap) <= usableWidth) {
+                // Two-column
                 container.classList.add('two-column');
                 container.classList.remove('single-column');
-                container.style.setProperty('--square-size', `${squareSize}px`);
+                finalSquare = desktopSquare;
                 container.style.overflowY = 'hidden';
-                container.style.maxHeight = `${availableHeight}px`;
-            } else {
-                // Single column: square width is min(availableHeight, usableWidth)
-                let singleSize = Math.min(squareSize, usableWidth);
-                // On very narrow screens, subtract small padding to avoid touching edges
-                singleSize = Math.max(0, singleSize);
+            } else if (usableWidth >= desktopSquare) {
+                // Stack but keep desktop square size and allow vertical scroll
                 container.classList.add('single-column');
                 container.classList.remove('two-column');
-                container.style.setProperty('--square-size', `${singleSize}px`);
-                // Allow vertical scrolling when stacked and confine height
+                finalSquare = desktopSquare;
                 container.style.overflowY = 'auto';
-                container.style.maxHeight = `${availableHeight}px`;
+            } else {
+                // Narrow mobile: full-width squares
+                container.classList.add('single-column');
+                container.classList.remove('two-column');
+                finalSquare = Math.max(0, usableWidth);
+                container.style.overflowY = 'auto';
             }
+
+            // Reset container padding so JS-controlled sizing centers content
+            // and avoids the large CSS `padding-bottom` that was shifting content upward.
+            container.style.paddingTop = `${containerPaddingLeft}px`;
+            container.style.paddingRight = `${containerPaddingRight}px`;
+            // Keep a small bottom padding so controls don't touch videos
+            container.style.paddingBottom = `20px`;
+
+            // Apply computed size as CSS variable and explicit widths on wrappers (helps Safari)
+            container.style.setProperty('--square-size', `${finalSquare}px`);
+            const wrappers = container.querySelectorAll('.video-wrapper');
+            wrappers.forEach(w => {
+                // For single-column stacked full-width behavior, width 100% with max-width
+                if (container.classList.contains('single-column') && finalSquare === usableWidth) {
+                    w.style.width = '100%';
+                    w.style.maxWidth = `${finalSquare}px`;
+                    // Explicit height helps Safari compute the layout correctly
+                    w.style.height = `${finalSquare}px`;
+                } else {
+                    w.style.width = `${finalSquare}px`;
+                    w.style.maxWidth = `${finalSquare}px`;
+                    // Explicit height keeps wrappers square across browsers
+                    w.style.height = `${finalSquare}px`;
+                }
+            });
+
+            // Ensure container alignment matches layout choice (helps Safari align rows correctly)
+            if (container.classList.contains('single-column')) {
+                container.style.alignContent = 'start';
+            } else {
+                container.style.alignContent = 'center';
+            }
+
+            // Constrain container max-height to availableHeight so it scrolls between header and controls
+            container.style.maxHeight = `${availableHeight}px`;
+
+            // Force a synchronous reflow/read to ensure WebKit/Safari applies the new widths/heights
+            // This is a known workaround for some WebKit layout timing issues.
+            // eslint-disable-next-line no-unused-expressions
+            container.offsetHeight;
         } catch (e) {
             this.debug('updateVideoGridLayout failed', 'warning', e);
         }

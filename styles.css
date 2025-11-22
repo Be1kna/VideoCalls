@@ -546,6 +546,12 @@ body {
         margin: 0 auto;
     }
 
+    /* Extra spacing between stacked items to avoid overlap, especially on WebKit/Safari */
+    .video-container.single-column .video-wrapper {
+        margin-bottom: 20px;
+        z-index: 1; /* ensure normal stacking order */
+    }
+
     .video-wrapper video {
         object-fit: cover; /* crop to fill square tiles */
     }
