@@ -60,6 +60,7 @@ class VideoCallClient {
         this._currentFacing = 'user';
         this._hasMultipleVideoInputs = false;
         this._videoInputDevices = [];
+        this.remotePeerName = null;
         this.initializeDebugBox();
         // Fullscreen resume handling: ensure playback resumes when exiting fullscreen on mobile
         try {
@@ -84,7 +85,14 @@ class VideoCallClient {
                 if (remoteVideo) {
                     remoteVideo.playsInline = true;
                     remoteVideo.setAttribute('playsinline', '');
-                    remoteVideo.play().then(() => this.debug('Resumed remote video after fullscreen exit', 'info')).catch(err => this.debug('Auto-play resume failed', 'warning', err));
+                    remoteVideo.play().then(() => this.debug('Resumed remote video after fullscreen exit', 'info')).catch(err => {
+                        this.debug('Auto-play resume failed', 'warning', err);
+                    }).finally(() => {
+                        // If still paused (due to autoplay restrictions), show resume button so user can tap
+                        try {
+                            if (remoteVideo.paused) this._showRemoteResumeButton(remoteVideo);
+                        } catch (e) {}
+                    });
                 }
                 if (localVideo) {
                     localVideo.playsInline = true;
@@ -95,6 +103,61 @@ class VideoCallClient {
         } catch (e) {
             this.debug('Error in fullscreen change handler', 'warning', e);
         }
+    }
+
+    _ensureRemoteResumeButton(remoteVideo) {
+        try {
+            if (!remoteVideo) return null;
+            const wrapper = remoteVideo.closest('.video-wrapper');
+            if (!wrapper) return null;
+            let btn = wrapper.querySelector('.remote-resume-btn');
+            if (!btn) {
+                btn = document.createElement('button');
+                btn.className = 'remote-resume-btn';
+                btn.textContent = 'Resume';
+                btn.style.position = 'absolute';
+                btn.style.left = '50%';
+                btn.style.top = '50%';
+                btn.style.transform = 'translate(-50%, -50%)';
+                btn.style.padding = '10px 18px';
+                btn.style.borderRadius = '8px';
+                btn.style.background = 'rgba(0,0,0,0.7)';
+                btn.style.color = '#fff';
+                btn.style.zIndex = 2200;
+                btn.style.display = 'none';
+                btn.style.cursor = 'pointer';
+                btn.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    try {
+                        await remoteVideo.play();
+                        btn.style.display = 'none';
+                        this.debug('Remote video resumed via resume button', 'info');
+                    } catch (err) {
+                        this.debug('Resume button play() failed', 'warning', err);
+                    }
+                });
+                wrapper.appendChild(btn);
+            }
+            return btn;
+        } catch (e) {
+            this.debug('Could not create remote resume button', 'warning', e);
+            return null;
+        }
+    }
+
+    _showRemoteResumeButton(remoteVideo) {
+        const btn = this._ensureRemoteResumeButton(remoteVideo);
+        if (btn) btn.style.display = 'block';
+    }
+
+    _hideRemoteResumeButton(remoteVideo) {
+        try {
+            if (!remoteVideo) return;
+            const wrapper = remoteVideo.closest('.video-wrapper');
+            if (!wrapper) return;
+            const btn = wrapper.querySelector('.remote-resume-btn');
+            if (btn) btn.style.display = 'none';
+        } catch (e) { /* ignore */ }
     }
     
     initializeDebugBox() {
@@ -440,6 +503,7 @@ class VideoCallClient {
                 try {
                     const rl = document.getElementById('remoteLabel');
                     if (rl) rl.textContent = message.name || 'Remote Participant';
+                    this.remotePeerName = message.name || null;
                 } catch (e) { this.debug('Could not set remote label', 'warning', e); }
                 this.debug('Creating peer connection for new user...', 'info');
                 await this.createPeerConnection();
@@ -450,11 +514,20 @@ class VideoCallClient {
                 
             case 'offer':
                 this.debug('Received offer', 'info');
+                // If the offer message carries a name, remember it for labeling
+                if (message.name) {
+                    this.remotePeerName = message.name;
+                    try { const rl = document.getElementById('remoteLabel'); if (rl) rl.textContent = message.name; } catch(e){}
+                }
                 await this.handleOffer(message.offer);
                 break;
                 
             case 'answer':
                 this.debug('Received answer', 'info');
+                if (message.name) {
+                    this.remotePeerName = message.name;
+                    try { const rl = document.getElementById('remoteLabel'); if (rl) rl.textContent = message.name; } catch(e){}
+                }
                 await this.handleAnswer(message.answer);
                 break;
                 
@@ -736,7 +809,24 @@ class VideoCallClient {
                     });
                 } catch (e) { this.debug('Could not set playsInline or play remoteVideo', 'warning', e); }
                 this.remoteStream = event.streams[0];
-                document.getElementById('remoteLabel').textContent = 'Remote Participant';
+                        // Use stored peer name if available
+                        const peerName = this.remotePeerName || 'Remote Participant';
+                        document.getElementById('remoteLabel').textContent = peerName;
+                        // Attach pause/play listeners to show resume overlay when needed
+                        try {
+                            const rv = remoteVideo;
+                            // ensure playsinline
+                            rv.playsInline = true;
+                            rv.setAttribute('playsinline', '');
+                            // Create resume button and attach listeners
+                            this._ensureRemoteResumeButton(rv);
+                            rv.addEventListener('pause', () => {
+                                // If paused and not ended, show resume UI
+                                if (!rv.ended) this._showRemoteResumeButton(rv);
+                            });
+                            rv.addEventListener('play', () => this._hideRemoteResumeButton(rv));
+                            rv.addEventListener('ended', () => this._hideRemoteResumeButton(rv));
+                        } catch (e) { this.debug('Could not attach remote video listeners', 'warning', e); }
                 this.updateConnectionStatus('Connected', 'connected');
                 
                 // Force play the video
