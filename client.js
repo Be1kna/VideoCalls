@@ -1112,7 +1112,7 @@ class VideoCallClient {
                         await this.peerConnection.addIceCandidate(new RTCIceCandidate(w.candidate));
                         this.debug('Buffered remote ICE candidate added', 'info', { ageMs });
                     } catch (err) {
-                        this.debug('Error adding buffered ICE candidate', 'error', err);
+                        this.debug('Error adding buffered ICE candidate', 'error', { message: err && err.message, stack: err && err.stack });
                     }
                 }
                 this._remoteIceBuffer = [];
@@ -1168,7 +1168,7 @@ class VideoCallClient {
                         await this.peerConnection.addIceCandidate(new RTCIceCandidate(w.candidate));
                         this.debug('Buffered remote ICE candidate added', 'info', { ageMs });
                     } catch (err) {
-                        this.debug('Error adding buffered ICE candidate', 'error', err);
+                        this.debug('Error adding buffered ICE candidate', 'error', { message: err && err.message, stack: err && err.stack });
                     }
                 }
                 this._remoteIceBuffer = [];
@@ -1211,10 +1211,10 @@ class VideoCallClient {
 
             await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
             this.debug('Remote ICE candidate added successfully', 'info', { ageMs });
-        } catch (error) {
-            this.debug('Error adding ICE candidate', 'error', error);
-            console.error('Error adding ICE candidate:', error);
-        }
+                } catch (error) {
+                    this.debug('Error adding ICE candidate', 'error', { message: error && error.message, stack: error && error.stack });
+                    console.error('Error adding ICE candidate:', error && (error.stack || error.message || error));
+                }
     }
     
     async toggleAudio() {

@@ -59,14 +59,27 @@ const server = http.createServer((req, res) => {
                     });
 
                     let parsed;
-                    try { parsed = JSON.parse(body || '{}'); } catch (e) { parsed = {}; console.warn('[ice-servers] Could not parse Xirsys response JSON', e); }
+                    try { parsed = JSON.parse(body || '{}'); } catch (e) { parsed = null; console.warn('[ice-servers] Could not parse Xirsys response JSON', e && e.message); }
+                    // If provider returned non-JSON text that contains a JSON array, attempt to extract it
+                    if ((!parsed || !(parsed.iceServers || (parsed.v && parsed.v.iceServers))) && body) {
+                        const m = (body || '').match(/\[\s*\{[\s\S]*\}\s*\]/);
+                        if (m && m[0]) {
+                            try {
+                                const parsedArray = JSON.parse(m[0]);
+                                parsed = { iceServers: parsedArray };
+                                console.log('[ice-servers] Extracted iceServers array from non-JSON response');
+                            } catch (e2) {
+                                console.warn('[ice-servers] Could not extract JSON array from response', e2 && e2.message);
+                            }
+                        }
+                    }
                     const ice = (parsed && parsed.v && parsed.v.iceServers) ? parsed.v.iceServers : (parsed && parsed.iceServers ? parsed.iceServers : null);
                     if (Array.isArray(ice) && ice.length) {
                         console.log(`[ice-servers] Returning ${ice.length} iceServers from Xirsys Basic auth fetch`);
                         res.end(JSON.stringify({ iceServers: ice }));
                         return;
                     } else {
-                        console.log('[ice-servers] Xirsys Basic auth fetch returned no iceServers, falling back');
+                        console.log('[ice-servers] Xirsys Basic auth fetch returned no iceServers, falling back; body preview:', (body || '').slice(0,200));
                     }
                 } catch (err) {
                     console.warn('Xirsys ident/secret fetch failed', err && (err.stack || err.message || err));
@@ -105,9 +118,28 @@ const server = http.createServer((req, res) => {
             try {
                 if (process.env.TURN_SERVERS) {
                     // Expecting JSON string like: [{"urls":"turn:turn.example.com:3478","username":"user","credential":"pass"}]
-                    const parsed = JSON.parse(process.env.TURN_SERVERS);
-                    if (Array.isArray(parsed) && parsed.length) {
-                        iceServers = parsed.concat(defaultIce);
+                    // TURN_SERVERS may be set either as a JSON array string or as provider output.
+                    try {
+                        const parsed = JSON.parse(process.env.TURN_SERVERS);
+                        if (Array.isArray(parsed) && parsed.length) {
+                            iceServers = parsed.concat(defaultIce);
+                        }
+                    } catch (innerErr) {
+                        // Try to extract a JSON array substring if someone pasted provider output
+                        const raw = process.env.TURN_SERVERS || '';
+                        const m = raw.match(/\[\s*\{[\s\S]*\}\s*\]/);
+                        if (m && m[0]) {
+                            try {
+                                const parsed2 = JSON.parse(m[0]);
+                                if (Array.isArray(parsed2) && parsed2.length) {
+                                    iceServers = parsed2.concat(defaultIce);
+                                }
+                            } catch (e2) {
+                                console.warn('[ice-servers] TURN_SERVERS contains bracketed text but JSON.parse failed', e2 && e2.message);
+                            }
+                        } else {
+                            console.warn('[ice-servers] TURN_SERVERS env var not valid JSON; value preview:', (raw || '').slice(0,200));
+                        }
                     }
                 } else if (process.env.TURN_URLS && process.env.TURN_USERNAME && process.env.TURN_PASSWORD) {
                     // Allow comma-separated TURN_URLS
@@ -368,11 +400,13 @@ function handleIceCandidate(data, senderWs) {
     }
 
     // Forward ICE candidate to other participants (exclude sender)
+    const candidateTime = data.candidateTime || null;
     roomParticipants.forEach((participant, participantWs) => {
         if (participantWs !== senderWs && participantWs.readyState === WebSocket.OPEN) {
             participantWs.send(JSON.stringify({
                 type: 'ice-candidate',
-                candidate: candidate
+                candidate: candidate,
+                candidateTime
             }));
         }
     });
