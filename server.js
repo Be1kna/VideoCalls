@@ -16,37 +16,100 @@ const server = http.createServer((req, res) => {
     }
     // Provide ICE servers to clients (TURN/STUN) if configured via env
     if (req.url === '/ice-servers') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
+        // Async helper so we can optionally fetch dynamic credentials from a TURN provider
+        (async () => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
 
-        // Default STUN servers
-        const defaultIce = [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-        ];
+            // Default STUN servers
+            const defaultIce = [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ];
 
-        // If TURN_SERVERS is provided as JSON in env, use that
-        let iceServers = defaultIce;
-        try {
-            if (process.env.TURN_SERVERS) {
-                // Expecting JSON string like: [{"urls":"turn:turn.example.com:3478","username":"user","credential":"pass"}]
-                const parsed = JSON.parse(process.env.TURN_SERVERS);
-                if (Array.isArray(parsed) && parsed.length) {
-                    iceServers = parsed.concat(defaultIce);
-                }
-            } else if (process.env.TURN_URLS && process.env.TURN_USERNAME && process.env.TURN_PASSWORD) {
-                // Allow comma-separated TURN_URLS
-                const urls = process.env.TURN_URLS.split(',').map(s => s.trim()).filter(Boolean);
-                if (urls.length) {
-                    const turnEntries = urls.map(u => ({ urls: u, username: process.env.TURN_USERNAME, credential: process.env.TURN_PASSWORD }));
-                    iceServers = turnEntries.concat(defaultIce);
+            // Try dynamic provider (e.g. Xirsys) if configured
+            // First, if ident/secret are provided, try the Xirsys global REST endpoint with Basic auth
+            if (process.env.XIRSYS_IDENT && process.env.XIRSYS_SECRET) {
+                try {
+                    const channel = process.env.XIRSYS_CHANNEL || 'VideoCall';
+                    const https = require('https');
+                    const auth = Buffer.from(`${process.env.XIRSYS_IDENT}:${process.env.XIRSYS_SECRET}`).toString('base64');
+                    const options = {
+                        hostname: 'global.xirsys.net',
+                        path: `/_turn/${encodeURIComponent(channel)}`,
+                        method: 'GET',
+                        headers: {
+                            'Authorization': `Basic ${auth}`,
+                            'User-Agent': 'VideoCallsServer/1.0'
+                        }
+                    };
+
+                    const body = await new Promise((resolve, reject) => {
+                        const req2 = https.request(options, (res2) => {
+                            let data = '';
+                            res2.on('data', (chunk) => { data += chunk; });
+                            res2.on('end', () => resolve(data));
+                        });
+                        req2.on('error', (err) => reject(err));
+                        req2.end();
+                    });
+
+                    const parsed = JSON.parse(body || '{}');
+                    const ice = (parsed && parsed.v && parsed.v.iceServers) ? parsed.v.iceServers : (parsed && parsed.iceServers ? parsed.iceServers : null);
+                    if (Array.isArray(ice) && ice.length) {
+                        res.end(JSON.stringify({ iceServers: ice }));
+                        return;
+                    }
+                } catch (err) {
+                    console.warn('Xirsys ident/secret fetch failed', err && (err.stack || err.message || err));
                 }
             }
-        } catch (e) {
-            console.warn('Could not parse TURN_SERVERS env var, falling back to default STUNs', e);
-            iceServers = defaultIce;
-        }
 
-        res.end(JSON.stringify({ iceServers }));
+            if (process.env.XIRSYS_API_URL) {
+                try {
+                    const fetch = global.fetch || (await import('node-fetch')).default;
+                    const headers = {};
+                    if (process.env.XIRSYS_API_TOKEN) headers['Authorization'] = `Bearer ${process.env.XIRSYS_API_TOKEN}`;
+                    const resp = await fetch(process.env.XIRSYS_API_URL, { method: 'GET', headers, cache: 'no-store' });
+                    if (resp && resp.ok) {
+                        const body = await resp.json();
+                        // Accept either { iceServers: [...] } or provider-wrapped { v: { iceServers: [...] } }
+                        const ice = (body && body.iceServers) ? body.iceServers : (body && body.v && body.v.iceServers) ? body.v.iceServers : null;
+                        if (Array.isArray(ice) && ice.length) {
+                            res.end(JSON.stringify({ iceServers: ice }));
+                            return;
+                        }
+                    } else {
+                        console.warn('Dynamic ICE fetch returned non-OK', resp && resp.status);
+                    }
+                } catch (err) {
+                    console.warn('Dynamic ICE fetch failed', err && (err.stack || err.message || err));
+                }
+            }
+
+            // Fallback: If TURN_SERVERS is provided as JSON in env, use that
+            let iceServers = defaultIce;
+            try {
+                if (process.env.TURN_SERVERS) {
+                    // Expecting JSON string like: [{"urls":"turn:turn.example.com:3478","username":"user","credential":"pass"}]
+                    const parsed = JSON.parse(process.env.TURN_SERVERS);
+                    if (Array.isArray(parsed) && parsed.length) {
+                        iceServers = parsed.concat(defaultIce);
+                    }
+                } else if (process.env.TURN_URLS && process.env.TURN_USERNAME && process.env.TURN_PASSWORD) {
+                    // Allow comma-separated TURN_URLS
+                    const urls = process.env.TURN_URLS.split(',').map(s => s.trim()).filter(Boolean);
+                    if (urls.length) {
+                        const turnEntries = urls.map(u => ({ urls: u, username: process.env.TURN_USERNAME, credential: process.env.TURN_PASSWORD }));
+                        iceServers = turnEntries.concat(defaultIce);
+                    }
+                }
+            } catch (e) {
+                console.warn('Could not parse TURN_SERVERS env var, falling back to default STUNs', e);
+                iceServers = defaultIce;
+            }
+
+            res.end(JSON.stringify({ iceServers }));
+        })();
         return;
     }
     // Serve static files
