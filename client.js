@@ -65,6 +65,10 @@ class VideoCallClient {
 
         // Buffer for remote ICE candidates that arrive before remote description is set
         this._remoteIceBuffer = [];
+        // Map of local candidate signatures -> timestamp (for diagnostics)
+        this._localCandidateTimestamps = new Map();
+        // How old (ms) a candidate can be before treated as expired
+        this._candidateExpiryMs = 60 * 1000; // 60 seconds
         // Track current camera facing mode ('user' or 'environment') and whether multiple cameras exist
         this._currentFacing = 'user';
         this._hasMultipleVideoInputs = false;
@@ -103,7 +107,8 @@ class VideoCallClient {
                 btn.style.background = 'rgba(0,0,0,0.7)';
                 btn.style.color = '#fff';
                 btn.style.zIndex = 2200;
-                btn.style.display = 'none';
+                this.peerConnection = new RTCPeerConnection(this.rtcConfiguration);
+                this.debug('RTCPeerConnection created', 'success');
                 btn.style.cursor = 'pointer';
                 btn.addEventListener('click', async (e) => {
                     e.preventDefault();
@@ -636,8 +641,8 @@ class VideoCallClient {
                 break;
                 
             case 'ice-candidate':
-                this.debug('Received ICE candidate', 'info');
-                await this.handleIceCandidate(message.candidate);
+                this.debug('Received ICE candidate', 'info', { hasCandidate: !!message.candidate, candidateTime: message.candidateTime || null });
+                await this.handleIceCandidate(message.candidate, message.candidateTime);
                 break;
                 
             case 'user-left':
@@ -963,10 +968,13 @@ class VideoCallClient {
                 // Check if socket is open before sending
                 if (this.socket && this.socket.readyState === WebSocket.OPEN) {
                     try {
+                        const candidateTime = Date.now();
+                        try { this._localCandidateTimestamps.set((event.candidate.candidate || '').slice(0,200), candidateTime); } catch(e){}
                         this.socket.send(JSON.stringify({
                             type: 'ice-candidate',
                             room: this.roomId,
-                            candidate: event.candidate
+                            candidate: event.candidate,
+                            candidateTime
                         }));
                         this.debug('ICE candidate sent successfully', 'info');
                     } catch (error) {
@@ -1090,12 +1098,19 @@ class VideoCallClient {
         try {
             this.debug('Setting remote description from offer...', 'info');
             await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-            // Flush any buffered remote ICE candidates that arrived early
+            // Flush any buffered remote ICE candidates that arrived early (skip expired)
             if (this._remoteIceBuffer && this._remoteIceBuffer.length) {
-                this.debug(`Flushing ${this._remoteIceBuffer.length} buffered remote ICE candidates`, 'info');
-                for (const c of this._remoteIceBuffer) {
+                this.debug(`Flushing ${this._remoteIceBuffer.length} buffered remote ICE candidates (checking expiry)`, 'info');
+                for (const w of this._remoteIceBuffer) {
+                    const ts = w.candidateTime || w.receivedAt;
+                    const ageMs = Date.now() - ts;
+                    if (ageMs > this._candidateExpiryMs) {
+                        this.debug('Skipping expired buffered ICE candidate', 'warning', { ageMs, thresholdMs: this._candidateExpiryMs, candidate: (w.candidate && w.candidate.candidate) ? w.candidate.candidate.substring(0,80) + '...' : null });
+                        continue;
+                    }
                     try {
-                        await this.peerConnection.addIceCandidate(new RTCIceCandidate(c));
+                        await this.peerConnection.addIceCandidate(new RTCIceCandidate(w.candidate));
+                        this.debug('Buffered remote ICE candidate added', 'info', { ageMs });
                     } catch (err) {
                         this.debug('Error adding buffered ICE candidate', 'error', err);
                     }
@@ -1139,12 +1154,19 @@ class VideoCallClient {
             }
             this.debug('Setting remote description from answer...', 'info');
             await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
-            // Flush buffered ICE candidates now that remote description exists
+            // Flush buffered ICE candidates now that remote description exists (skip expired)
             if (this._remoteIceBuffer && this._remoteIceBuffer.length) {
-                this.debug(`Flushing ${this._remoteIceBuffer.length} buffered remote ICE candidates`, 'info');
-                for (const c of this._remoteIceBuffer) {
+                this.debug(`Flushing ${this._remoteIceBuffer.length} buffered remote ICE candidates (checking expiry)`, 'info');
+                for (const w of this._remoteIceBuffer) {
+                    const ts = w.candidateTime || w.receivedAt;
+                    const ageMs = Date.now() - ts;
+                    if (ageMs > this._candidateExpiryMs) {
+                        this.debug('Skipping expired buffered ICE candidate', 'warning', { ageMs, thresholdMs: this._candidateExpiryMs, candidate: (w.candidate && w.candidate.candidate) ? w.candidate.candidate.substring(0,80) + '...' : null });
+                        continue;
+                    }
                     try {
-                        await this.peerConnection.addIceCandidate(new RTCIceCandidate(c));
+                        await this.peerConnection.addIceCandidate(new RTCIceCandidate(w.candidate));
+                        this.debug('Buffered remote ICE candidate added', 'info', { ageMs });
                     } catch (err) {
                         this.debug('Error adding buffered ICE candidate', 'error', err);
                     }
@@ -1161,22 +1183,34 @@ class VideoCallClient {
     
     async handleIceCandidate(candidate) {
         try {
+            const receivedAt = Date.now();
+            const wrapped = { candidate, receivedAt, candidateTime: arguments[1] || null };
+
+            // If no peerConnection yet, buffer with timestamp
             if (!this.peerConnection) {
-                this.debug('No peerConnection when receiving ICE candidate; buffering', 'warning');
-                this._remoteIceBuffer.push(candidate);
+                this.debug('No peerConnection when receiving ICE candidate; buffering', 'warning', wrapped);
+                this._remoteIceBuffer.push(wrapped);
                 return;
             }
 
             // If remote description isn't set yet, buffer the candidate
             const remoteDesc = this.peerConnection.remoteDescription;
             if (!remoteDesc) {
-                this.debug('Remote description not set yet; buffering ICE candidate', 'info', candidate);
-                this._remoteIceBuffer.push(candidate);
+                this.debug('Remote description not set yet; buffering ICE candidate', 'info', wrapped);
+                this._remoteIceBuffer.push(wrapped);
+                return;
+            }
+
+            // If candidate appears older than expiry threshold, skip and log
+            const ts = wrapped.candidateTime || wrapped.receivedAt;
+            const ageMs = Date.now() - ts;
+            if (ageMs > this._candidateExpiryMs) {
+                this.debug('Dropping expired remote ICE candidate', 'warning', { ageMs, thresholdMs: this._candidateExpiryMs, candidate: (candidate && candidate.candidate) ? candidate.candidate.substring(0,80) + '...' : null });
                 return;
             }
 
             await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-            this.debug('Remote ICE candidate added successfully', 'info');
+            this.debug('Remote ICE candidate added successfully', 'info', { ageMs });
         } catch (error) {
             this.debug('Error adding ICE candidate', 'error', error);
             console.error('Error adding ICE candidate:', error);

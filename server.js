@@ -43,21 +43,30 @@ const server = http.createServer((req, res) => {
                         }
                     };
 
+                    console.log(`[ice-servers] Attempting Xirsys Basic auth fetch for channel=${channel} at ${new Date().toISOString()}`);
+
                     const body = await new Promise((resolve, reject) => {
                         const req2 = https.request(options, (res2) => {
                             let data = '';
                             res2.on('data', (chunk) => { data += chunk; });
-                            res2.on('end', () => resolve(data));
+                            res2.on('end', () => {
+                                console.log(`[ice-servers] Xirsys response status=${res2.statusCode}, length=${data.length}`);
+                                resolve(data);
+                            });
                         });
                         req2.on('error', (err) => reject(err));
                         req2.end();
                     });
 
-                    const parsed = JSON.parse(body || '{}');
+                    let parsed;
+                    try { parsed = JSON.parse(body || '{}'); } catch (e) { parsed = {}; console.warn('[ice-servers] Could not parse Xirsys response JSON', e); }
                     const ice = (parsed && parsed.v && parsed.v.iceServers) ? parsed.v.iceServers : (parsed && parsed.iceServers ? parsed.iceServers : null);
                     if (Array.isArray(ice) && ice.length) {
+                        console.log(`[ice-servers] Returning ${ice.length} iceServers from Xirsys Basic auth fetch`);
                         res.end(JSON.stringify({ iceServers: ice }));
                         return;
+                    } else {
+                        console.log('[ice-servers] Xirsys Basic auth fetch returned no iceServers, falling back');
                     }
                 } catch (err) {
                     console.warn('Xirsys ident/secret fetch failed', err && (err.stack || err.message || err));
@@ -66,15 +75,20 @@ const server = http.createServer((req, res) => {
 
             if (process.env.XIRSYS_API_URL) {
                 try {
+                    console.log(`[ice-servers] Attempting dynamic fetch from XIRSYS_API_URL=${process.env.XIRSYS_API_URL} at ${new Date().toISOString()}`);
                     const fetch = global.fetch || (await import('node-fetch')).default;
                     const headers = {};
                     if (process.env.XIRSYS_API_TOKEN) headers['Authorization'] = `Bearer ${process.env.XIRSYS_API_TOKEN}`;
                     const resp = await fetch(process.env.XIRSYS_API_URL, { method: 'GET', headers, cache: 'no-store' });
+                    console.log('[ice-servers] dynamic fetch status', resp && resp.status);
                     if (resp && resp.ok) {
-                        const body = await resp.json();
-                        // Accept either { iceServers: [...] } or provider-wrapped { v: { iceServers: [...] } }
-                        const ice = (body && body.iceServers) ? body.iceServers : (body && body.v && body.v.iceServers) ? body.v.iceServers : null;
+                        const body = await resp.text();
+                        console.log('[ice-servers] dynamic fetch response length', body && body.length);
+                        let parsedBody;
+                        try { parsedBody = JSON.parse(body); } catch (e) { parsedBody = null; console.warn('[ice-servers] dynamic fetch returned non-JSON', e); }
+                        const ice = (parsedBody && parsedBody.iceServers) ? parsedBody.iceServers : (parsedBody && parsedBody.v && parsedBody.v.iceServers) ? parsedBody.v.iceServers : null;
                         if (Array.isArray(ice) && ice.length) {
+                            console.log(`[ice-servers] Returning ${ice.length} iceServers from dynamic fetch`);
                             res.end(JSON.stringify({ iceServers: ice }));
                             return;
                         }
