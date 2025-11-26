@@ -1098,9 +1098,31 @@ class VideoCallClient {
         try {
             this.debug('handleOffer: received offer (len=' + (offer && offer.sdp ? offer.sdp.length : 0) + ')', 'info');
             // set remote description and wait for it to be applied
+            this.debug('Offer SDP length', 'info', { sdpLength: offer && offer.sdp ? offer.sdp.length : 0 });
             await this.peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-            this.debug('Remote description applied (offer)', 'info');
+            this.debug('Attempted to apply remote description (offer)', 'info');
 
+            // Ensure the PC is in the expected signaling state before creating an answer
+            if (this.peerConnection.signalingState !== 'have-remote-offer') {
+                // give the engine a short moment to update
+                await new Promise(r => setTimeout(r, 150));
+            }
+
+            if (this.peerConnection.signalingState !== 'have-remote-offer') {
+                // Log detailed diagnostics and bail gracefully
+                this.debug('Unexpected signalingState after setRemoteDescription', 'error', {
+                    signalingState: this.peerConnection.signalingState,
+                    remoteDescriptionType: this.peerConnection.remoteDescription ? this.peerConnection.remoteDescription.type : null,
+                    localDescriptionType: this.peerConnection.localDescription ? this.peerConnection.localDescription.type : null,
+                    hasLocalStream: !!this.localStream,
+                    localStreamTracks: this.localStream ? { video: this.localStream.getVideoTracks().length, audio: this.localStream.getAudioTracks().length } : null
+                });
+                // attempt to flush buffered candidates in case signalling state later becomes correct
+                await this._flushBufferedCandidatesWithWait();
+                throw new Error('Cannot create answer: peerConnection not in have-remote-offer state after applying remote description');
+            }
+
+            // Now safe to create answer
             const answer = await this.peerConnection.createAnswer();
             await this.peerConnection.setLocalDescription(answer);
             this.debug('Answer created and set (len=' + (answer && answer.sdp ? answer.sdp.length : 0) + ')', 'info');
