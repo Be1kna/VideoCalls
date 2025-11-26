@@ -14,6 +14,52 @@ const server = http.createServer((req, res) => {
         res.end('OK');
         return;
     }
+    // Debug endpoint to probe TURN provider hosts and return a short summary (requires XIRSYS_IDENT/XIRSYS_SECRET)
+    if (req.url && req.url.startsWith('/_debug_provider')) {
+        (async () => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            if (!process.env.XIRSYS_IDENT || !process.env.XIRSYS_SECRET) {
+                res.end(JSON.stringify({ error: 'XIRSYS_IDENT and XIRSYS_SECRET must be set on the server for debug probes' }));
+                return;
+            }
+            try {
+                const https = require('https');
+                const channel = process.env.XIRSYS_CHANNEL || 'VideoCall';
+                const auth = Buffer.from(`${process.env.XIRSYS_IDENT}:${process.env.XIRSYS_SECRET}`).toString('base64');
+                const hostsToTry = ['global.xirsys.net', 'ws-turn1.xirsys.com', 'ws-turn2.xirsys.com', 'ws-turn1.xirs.com', 'ws-turn2.xirs.com'];
+                const probeResults = [];
+                for (const host of hostsToTry) {
+                    try {
+                        const options = {
+                            hostname: host,
+                            path: `/_turn/${encodeURIComponent(channel)}`,
+                            method: 'GET',
+                            headers: { 'Authorization': `Basic ${auth}`, 'User-Agent': 'VideoCallsServer/1.0' },
+                            timeout: 5000
+                        };
+                        const body = await new Promise((resolve) => {
+                            const req2 = https.request(options, (res2) => {
+                                let data = '';
+                                res2.on('data', (chunk) => { data += chunk; });
+                                res2.on('end', () => resolve({ status: res2.statusCode, body: (data || '').slice(0,1000), length: (data || '').length }));
+                            });
+                            req2.on('error', (err) => resolve({ error: err && err.message }));
+                            req2.on('timeout', () => { req2.destroy(); resolve({ error: 'timeout' }); });
+                            req2.end();
+                        });
+                        probeResults.push(Object.assign({ host }, body));
+                    } catch (err) {
+                        probeResults.push({ host, error: err && err.message });
+                    }
+                }
+                res.end(JSON.stringify({ probeResults }));
+            } catch (err) {
+                res.end(JSON.stringify({ error: err && (err.message || String(err)) }));
+            }
+        })();
+        return;
+    }
+
     // Provide ICE servers to clients (TURN/STUN) if configured via env
     if (req.url === '/ice-servers') {
         // Async helper so we can optionally fetch dynamic credentials from a TURN provider
@@ -27,59 +73,87 @@ const server = http.createServer((req, res) => {
             ];
 
             // Try dynamic provider (e.g. Xirsys) if configured
-            // First, if ident/secret are provided, try the Xirsys global REST endpoint with Basic auth
+            // First, if ident/secret are provided, try several known Xirsys hosts with Basic auth
             if (process.env.XIRSYS_IDENT && process.env.XIRSYS_SECRET) {
                 try {
                     const channel = process.env.XIRSYS_CHANNEL || 'VideoCall';
                     const https = require('https');
                     const auth = Buffer.from(`${process.env.XIRSYS_IDENT}:${process.env.XIRSYS_SECRET}`).toString('base64');
-                    const options = {
-                        hostname: 'global.xirsys.net',
-                        path: `/_turn/${encodeURIComponent(channel)}`,
-                        method: 'GET',
-                        headers: {
-                            'Authorization': `Basic ${auth}`,
-                            'User-Agent': 'VideoCallsServer/1.0'
-                        }
-                    };
+
+                    // Hosts to try in order (some accounts/endpoints are regional)
+                    const hostsToTry = [
+                        'global.xirsys.net',
+                        'ws-turn1.xirsys.com',
+                        'ws-turn2.xirsys.com',
+                        'ws-turn1.xirs.com',
+                        'ws-turn2.xirs.com'
+                    ];
 
                     console.log(`[ice-servers] Attempting Xirsys Basic auth fetch for channel=${channel} at ${new Date().toISOString()}`);
 
-                    const body = await new Promise((resolve, reject) => {
-                        const req2 = https.request(options, (res2) => {
-                            let data = '';
-                            res2.on('data', (chunk) => { data += chunk; });
-                            res2.on('end', () => {
-                                console.log(`[ice-servers] Xirsys response status=${res2.statusCode}, length=${data.length}`);
-                                resolve(data);
-                            });
-                        });
-                        req2.on('error', (err) => reject(err));
-                        req2.end();
-                    });
+                    const probeResults = [];
+                    for (const host of hostsToTry) {
+                        try {
+                            const options = {
+                                hostname: host,
+                                path: `/_turn/${encodeURIComponent(channel)}`,
+                                method: 'GET',
+                                headers: {
+                                    'Authorization': `Basic ${auth}`,
+                                    'User-Agent': 'VideoCallsServer/1.0'
+                                },
+                                timeout: 5000
+                            };
 
-                    let parsed;
-                    try { parsed = JSON.parse(body || '{}'); } catch (e) { parsed = null; console.warn('[ice-servers] Could not parse Xirsys response JSON', e && e.message); }
-                    // If provider returned non-JSON text that contains a JSON array, attempt to extract it
-                    if ((!parsed || !(parsed.iceServers || (parsed.v && parsed.v.iceServers))) && body) {
-                        const m = (body || '').match(/\[\s*\{[\s\S]*\}\s*\]/);
-                        if (m && m[0]) {
-                            try {
-                                const parsedArray = JSON.parse(m[0]);
-                                parsed = { iceServers: parsedArray };
-                                console.log('[ice-servers] Extracted iceServers array from non-JSON response');
-                            } catch (e2) {
-                                console.warn('[ice-servers] Could not extract JSON array from response', e2 && e2.message);
+                            const body = await new Promise((resolve, reject) => {
+                                const req2 = https.request(options, (res2) => {
+                                    let data = '';
+                                    res2.on('data', (chunk) => { data += chunk; });
+                                    res2.on('end', () => {
+                                        probeResults.push({ host, status: res2.statusCode, length: data.length, body: (data || '').slice(0,1000) });
+                                        resolve(data);
+                                    });
+                                });
+                                req2.on('error', (err) => {
+                                    probeResults.push({ host, error: err && err.message });
+                                    resolve(null);
+                                });
+                                req2.on('timeout', () => { req2.destroy(); probeResults.push({ host, error: 'timeout' }); resolve(null); });
+                                req2.end();
+                            });
+
+                            if (!body) continue;
+
+                            let parsed;
+                            try { parsed = JSON.parse(body || '{}'); } catch (e) { parsed = null; console.warn(`[ice-servers] Could not parse JSON from ${host}`, e && e.message); }
+                            if ((!parsed || !(parsed.iceServers || (parsed.v && parsed.v.iceServers))) && body) {
+                                const m = (body || '').match(/\[\s*\{[\s\S]*\}\s*\]/);
+                                if (m && m[0]) {
+                                    try {
+                                        const parsedArray = JSON.parse(m[0]);
+                                        parsed = { iceServers: parsedArray };
+                                        console.log(`[ice-servers] Extracted iceServers array from non-JSON response from ${host}`);
+                                    } catch (e2) {
+                                        console.warn(`[ice-servers] Could not extract JSON array from response from ${host}`, e2 && e2.message);
+                                    }
+                                }
                             }
+                            const ice = (parsed && parsed.v && parsed.v.iceServers) ? parsed.v.iceServers : (parsed && parsed.iceServers ? parsed.iceServers : null);
+                            if (Array.isArray(ice) && ice.length) {
+                                console.log(`[ice-servers] Returning ${ice.length} iceServers from ${host}`);
+                                res.end(JSON.stringify({ iceServers: ice }));
+                                return;
+                            } else {
+                                console.log(`[ice-servers] ${host} returned no iceServers; preview:`, (body || '').slice(0,200));
+                            }
+                        } catch (innerErr) {
+                            console.warn(`[ice-servers] Probe of ${host} failed`, innerErr && (innerErr.stack || innerErr.message || innerErr));
                         }
                     }
-                    const ice = (parsed && parsed.v && parsed.v.iceServers) ? parsed.v.iceServers : (parsed && parsed.iceServers ? parsed.iceServers : null);
-                    if (Array.isArray(ice) && ice.length) {
-                        console.log(`[ice-servers] Returning ${ice.length} iceServers from Xirsys Basic auth fetch`);
-                        res.end(JSON.stringify({ iceServers: ice }));
-                        return;
-                    } else {
-                        console.log('[ice-servers] Xirsys Basic auth fetch returned no iceServers, falling back; body preview:', (body || '').slice(0,200));
+
+                    // If we tried hosts but none returned iceServers, log the probe summary for debugging
+                    if (probeResults.length) {
+                        console.log('[ice-servers] Xirsys probe results:', JSON.stringify(probeResults.map(r => ({ host: r.host, status: r.status, length: r.length, error: r.error })), null, 2));
                     }
                 } catch (err) {
                     console.warn('Xirsys ident/secret fetch failed', err && (err.stack || err.message || err));
