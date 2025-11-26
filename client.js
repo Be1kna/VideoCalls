@@ -320,6 +320,13 @@ class VideoCallClient {
         this.userName = userName;
         
         try {
+            // Fetch ICE servers (TURN/STUN) from server if available so peers can traverse NATs
+            try {
+                await this._fetchIceServers();
+            } catch (e) {
+                this.debug('Could not fetch ICE servers from server; using defaults', 'warning', e);
+            }
+
             this.debug('Step 1: Checking permissions...', 'info');
             // Check permissions first
             const permissionStatus = await this.checkPermissions();
@@ -371,6 +378,28 @@ class VideoCallClient {
             });
             console.error('Error joining room:', error);
             // Error message already shown in getUserMedia
+        }
+    }
+
+    // Fetch ICE servers from the signaling server. Server may include TURN credentials via env.
+    async _fetchIceServers() {
+        try {
+            const resp = await fetch('/ice-servers', { method: 'GET', cache: 'no-store' });
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            if (data && Array.isArray(data.iceServers) && data.iceServers.length) {
+                this.debug('Received ICE servers from signaling server', 'info', data.iceServers);
+                // Replace current rtcConfiguration. Keep existing STUNs as fallback by concatenating
+                this.rtcConfiguration = this.rtcConfiguration || {};
+                this.rtcConfiguration.iceServers = data.iceServers;
+                return data.iceServers;
+            } else {
+                this.debug('No ICE servers returned from signaling server', 'warning', data);
+                return null;
+            }
+        } catch (error) {
+            this.debug('Failed to fetch ICE servers', 'warning', error);
+            return null;
         }
     }
     

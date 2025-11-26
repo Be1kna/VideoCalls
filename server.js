@@ -14,6 +14,41 @@ const server = http.createServer((req, res) => {
         res.end('OK');
         return;
     }
+    // Provide ICE servers to clients (TURN/STUN) if configured via env
+    if (req.url === '/ice-servers') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+
+        // Default STUN servers
+        const defaultIce = [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+        ];
+
+        // If TURN_SERVERS is provided as JSON in env, use that
+        let iceServers = defaultIce;
+        try {
+            if (process.env.TURN_SERVERS) {
+                // Expecting JSON string like: [{"urls":"turn:turn.example.com:3478","username":"user","credential":"pass"}]
+                const parsed = JSON.parse(process.env.TURN_SERVERS);
+                if (Array.isArray(parsed) && parsed.length) {
+                    iceServers = parsed.concat(defaultIce);
+                }
+            } else if (process.env.TURN_URLS && process.env.TURN_USERNAME && process.env.TURN_PASSWORD) {
+                // Allow comma-separated TURN_URLS
+                const urls = process.env.TURN_URLS.split(',').map(s => s.trim()).filter(Boolean);
+                if (urls.length) {
+                    const turnEntries = urls.map(u => ({ urls: u, username: process.env.TURN_USERNAME, credential: process.env.TURN_PASSWORD }));
+                    iceServers = turnEntries.concat(defaultIce);
+                }
+            }
+        } catch (e) {
+            console.warn('Could not parse TURN_SERVERS env var, falling back to default STUNs', e);
+            iceServers = defaultIce;
+        }
+
+        res.end(JSON.stringify({ iceServers }));
+        return;
+    }
     // Serve static files
     let filePath = '.' + req.url;
     if (filePath === './') {
