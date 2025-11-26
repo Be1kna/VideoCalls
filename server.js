@@ -155,6 +155,53 @@ const server = http.createServer((req, res) => {
                     if (probeResults.length) {
                         console.log('[ice-servers] Xirsys probe results:', JSON.stringify(probeResults.map(r => ({ host: r.host, status: r.status, length: r.length, error: r.error })), null, 2));
                     }
+                    // As some Xirsys accounts expect a PUT with a JSON body, try that explicitly against global.xirsys.net
+                    try {
+                        const https = require('https');
+                        const host = 'global.xirsys.net';
+                        const optionsPut = {
+                            hostname: host,
+                            path: `/_turn/${encodeURIComponent(channel)}`,
+                            method: 'PUT',
+                            headers: {
+                                'Authorization': `Basic ${auth}`,
+                                'User-Agent': 'VideoCallsServer/1.0',
+                                'Content-Type': 'application/json'
+                            },
+                            timeout: 5000
+                        };
+                        const putBody = JSON.stringify({ format: 'urls' });
+                        const putResp = await new Promise((resolve) => {
+                            const req3 = https.request(optionsPut, (res3) => {
+                                let data = '';
+                                res3.on('data', (c) => { data += c; });
+                                res3.on('end', () => resolve({ status: res3.statusCode, body: data, length: data.length }));
+                            });
+                            req3.on('error', (err) => resolve({ error: err && err.message }));
+                            req3.on('timeout', () => { req3.destroy(); resolve({ error: 'timeout' }); });
+                            req3.write(putBody);
+                            req3.end();
+                        });
+                        probeResults.push(Object.assign({ host, method: 'PUT' }, putResp));
+                        if (putResp && putResp.body) {
+                            let parsedPut;
+                            try { parsedPut = JSON.parse(putResp.body); } catch (e) { parsedPut = null; }
+                            const putIce = parsedPut && parsedPut.v && parsedPut.v.iceServers ? parsedPut.v.iceServers : (parsedPut && parsedPut.iceServers ? parsedPut.iceServers : null);
+                            // normalize object -> array
+                            let normalized = null;
+                            if (putIce) {
+                                if (Array.isArray(putIce)) normalized = putIce;
+                                else if (typeof putIce === 'object' && putIce.urls) normalized = [putIce];
+                            }
+                            if (Array.isArray(normalized) && normalized.length) {
+                                console.log(`[ice-servers] Returning ${normalized.length} iceServers from PUT ${host}`);
+                                res.end(JSON.stringify({ iceServers: normalized }));
+                                return;
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('[ice-servers] PUT probe failed', e && (e.message || e));
+                    }
                 } catch (err) {
                     console.warn('Xirsys ident/secret fetch failed', err && (err.stack || err.message || err));
                 }
