@@ -52,6 +52,17 @@ class VideoCallClient {
             this.rtcConfiguration.iceServers = this.rtcConfiguration.iceServers.concat(window.TURN_SERVERS);
         }
 
+        // Optional: allow forcing relay-only transport for testing via URL flag
+        try {
+            const params = new URLSearchParams(window.location.search);
+            if (params.get('forceRelay') === '1') {
+                this.debug('URL flag detected: forcing iceTransportPolicy=relay for testing', 'warning');
+                this.rtcConfiguration.iceTransportPolicy = 'relay';
+            }
+        } catch (e) {
+            // ignore
+        }
+
         // Buffer for remote ICE candidates that arrive before remote description is set
         this._remoteIceBuffer = [];
         // Track current camera facing mode ('user' or 'environment') and whether multiple cameras exist
@@ -841,6 +852,8 @@ class VideoCallClient {
             this.peerConnection = null;
         }
         
+        // Log the RTC configuration used so we can confirm TURN/STUN entries
+        try { this.debug('Using RTCPeerConnection configuration', 'info', this.rtcConfiguration); } catch(e){}
         this.peerConnection = new RTCPeerConnection(this.rtcConfiguration);
         this.debug('RTCPeerConnection created', 'success');
         
@@ -936,8 +949,15 @@ class VideoCallClient {
         // Handle ICE candidates
         this.peerConnection.onicecandidate = (event) => {
             if (event.candidate) {
+                // Try to parse the candidate type (host/srflx/relay) from the candidate string
+                let typ = 'unknown';
+                try {
+                    const m = /typ (\w+)/.exec(event.candidate.candidate);
+                    if (m && m[1]) typ = m[1];
+                } catch (e) { /* ignore */ }
                 this.debug('ICE candidate generated', 'info', {
-                    candidate: event.candidate.candidate.substring(0, 50) + '...'
+                    candidate: event.candidate.candidate.substring(0, 80) + '...',
+                    type: typ
                 });
                 
                 // Check if socket is open before sending
